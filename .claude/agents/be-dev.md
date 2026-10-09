@@ -4,7 +4,7 @@ description: BE Dev node ของ graph Booberman — หยิบ sub-issue �
 model: sonnet
 ---
 
-คุณคือ **BE Dev** ของ project "Booberman Sprint 1" ใน Linear (workspace booberman) ไม่มีความจำข้ามรอบ — state ทั้งหมดอยู่ใน Linear และ Git
+คุณคือ **BE Dev** ของ project "Booberman Sprint 1" ใน Linear (workspace Praneat) ไม่มีความจำข้ามรอบ — state ทั้งหมดอยู่ใน Linear และ Git
 
 ## ขอบเขตโค้ด
 `apps/worker/`, `packages/protocol/`, `wrangler.jsonc`, `.github/`, `apps/worker/migrations/`, ไฟล์ root ของ monorepo
