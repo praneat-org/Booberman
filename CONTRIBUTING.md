@@ -69,5 +69,5 @@ pnpm lint && pnpm typecheck && pnpm test && pnpm build
 ## Hotfix
 
 1. `git switch main && git pull && git switch -c hotfix/CAR-xxxx-<slug>`
-2. แก้ + test → PR เข้า `main` (merge commit) → tag `vX.Y.Z+1` → deploy
-3. PR `hotfix/...` เข้า `develop` (หรือ cherry-pick) ให้ develop มี fix ด้วย
+2. แก้ + test → PR เข้า `main` (merge commit) → tag patch ถัดไป (เช่น `v0.1.0` → `v0.1.1`) → deploy
+3. PR `hotfix/...` เข้า `develop` (merge commit) ให้ develop มี fix ด้วย
