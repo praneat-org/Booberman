@@ -111,7 +111,9 @@ describe('input queue (AC 5)', () => {
     const a = await join('inp2', 'A');
     input(a, 5, 'right');
     await a.next((m) => m.t === 'snapshot' && m.ackSeq === 5);
-    await sleep(100);
+    // wait until any step that input started has settled (a step may span several ticks,
+    // see BE-36), so x1 is a resting position and only a stale input could move it
+    await sleep(400);
     const x1 = snapshots(a).at(-1)?.players[0]?.x ?? 0;
     input(a, 5, 'right'); // duplicate
     input(a, 3, 'right'); // older
