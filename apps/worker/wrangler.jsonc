@@ -7,6 +7,17 @@
   "durable_objects": {
     "bindings": [{ "name": "ROOM", "class_name": "RoomDO" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }],
+  // PLACEHOLDER id (works for local dev / tests / dry-run). BE-19 creates the real KV namespace;
+  // BE-26 replaces the id and adds the per-env (dev / production) copies. Not a secret.
+  "kv_namespaces": [{ "binding": "ROOMS", "id": "00000000000000000000000000000000" }],
+  // POST /api/rooms: 5 creates / 60s / IP (the IP key is set in code). namespace_id = any unique int in the account.
+  "ratelimits": [
+    {
+      "name": "ROOM_CREATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 5, "period": 60 }
+    }
+  ]
   // env dev / production, KV, D1, assets: added by later issues (BE-26, BE-30, BE-31, BE-42)
 }

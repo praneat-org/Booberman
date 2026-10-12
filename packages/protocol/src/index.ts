@@ -8,4 +8,5 @@ export * from './fixtures';
 export * from './health';
 export * from './messages';
 export * from './parse';
+export * from './rooms';
 export * from './version';

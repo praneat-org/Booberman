@@ -1,4 +1,11 @@
-import { HEALTH_PATH, type HealthResponse, PROTOCOL_VERSION, RoomId } from '@booberman/protocol';
+import {
+  HEALTH_PATH,
+  type HealthResponse,
+  PROTOCOL_VERSION,
+  ROOMS_PATH,
+  RoomId,
+} from '@booberman/protocol';
+import { createRoom, listRooms } from './api/rooms';
 import { createRouter, jsonError } from './http/router';
 
 export { RoomDO } from './room/RoomDO';
@@ -10,6 +17,10 @@ const ROOM_PATH = /^\/ws\/room\/([^/]+)$/;
 const api = createRouter<Env>({
   [HEALTH_PATH]: {
     GET: () => Response.json({ ok: true, protocol: PROTOCOL_VERSION } satisfies HealthResponse),
+  },
+  [ROOMS_PATH]: {
+    GET: (_request, env) => listRooms(env),
+    POST: (request, env) => createRoom(request, env),
   },
 });
 
