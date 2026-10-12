@@ -21,6 +21,8 @@ export type Player = { ws: WebSocket; playerId: PlayerId; nickname: string };
 
 /** Close code sent with ROOM_FULL (4000-4999 is free for applications). */
 export const CLOSE_ROOM_FULL = 4001;
+/** Close code sent with INVALID_NICKNAME (BE-35). */
+export const CLOSE_INVALID_NICKNAME = 4002;
 
 /**
  * One Durable Object = one room (`idFromName(roomId)`).
@@ -44,7 +46,13 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (typeof raw !== 'string')
       return this.sendError(ws, 'BAD_MESSAGE', 'binary frames are not supported');
     const parsed = parseClientMessage(raw);
-    if (!parsed.ok) return this.sendError(ws, parsed.error.code, parsed.error.message);
+    if (!parsed.ok) {
+      this.sendError(ws, parsed.error.code, parsed.error.message);
+      // the client's own check should have caught this: a bad nickname ends the connection
+      if (parsed.error.code === 'INVALID_NICKNAME')
+        ws.close(CLOSE_INVALID_NICKNAME, 'INVALID_NICKNAME');
+      return;
+    }
     const msg = parsed.data;
 
     switch (msg.t) {

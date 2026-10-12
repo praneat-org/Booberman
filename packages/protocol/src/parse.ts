@@ -6,7 +6,10 @@ import { PROTOCOL_VERSION } from './version';
 export const MAX_CLIENT_MESSAGE_BYTES = 1024;
 export const MAX_SERVER_MESSAGE_BYTES = 16 * 1024;
 
-export type ParseError = { code: 'BAD_MESSAGE' | 'VERSION_MISMATCH'; message: string };
+export type ParseError = {
+  code: 'BAD_MESSAGE' | 'VERSION_MISMATCH' | 'INVALID_NICKNAME';
+  message: string;
+};
 export type ParseResult<T> = { ok: true; data: T } | { ok: false; error: ParseError };
 
 function fail(code: ParseError['code'], message: string): { ok: false; error: ParseError } {
@@ -36,6 +39,8 @@ function parseWith<T>(schema: z.ZodType<T>, raw: unknown, maxLength: number): Pa
   const result = schema.safeParse(value);
   if (!result.success) {
     const issue = result.error.issues[0];
+    const reason = (issue?.code === 'custom' ? issue.params : undefined)?.nicknameReason;
+    if (typeof reason === 'string') return fail('INVALID_NICKNAME', `nickname: ${reason}`);
     const path = issue?.path.join('.') || '(root)';
     return fail('BAD_MESSAGE', `${path}: ${issue?.message ?? 'invalid'}`);
   }

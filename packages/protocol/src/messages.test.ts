@@ -51,7 +51,8 @@ describe('invalid messages', () => {
     expect(bad({ ...exampleClientMessages.input, bomb: 'yes' })).toBe('BAD_MESSAGE');
     expect(bad({ ...exampleClientMessages.input, dir: 'diagonal' })).toBe('BAD_MESSAGE');
     expect(bad({ ...join, room: 'ABC 123' })).toBe('BAD_MESSAGE');
-    expect(bad({ ...join, nickname: '   ' })).toBe('BAD_MESSAGE');
+    expect(bad({ ...join, nickname: '   ' })).toBe('INVALID_NICKNAME');
+    expect(bad({ ...join, nickname: 7 })).toBe('BAD_MESSAGE');
   });
 
   it('unknown t', () => {
