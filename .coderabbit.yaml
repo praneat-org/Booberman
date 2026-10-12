@@ -12,9 +12,10 @@ reviews:
     enabled: true
     # draft PR = still with the Dev / QA; review starts when QA marks the PR ready (D14)
     drafts: false
-    # Git Flow: feature → develop, release/* → main
+    # Git Flow bases: feature → develop · release/* + hotfix/* → main · bugfix → release/*
     base_branches:
       - "develop"
+      - "main"
       - "release/.*"
     # every push after a CodeRabbit round gets reviewed again (D14 loop)
     auto_incremental_review: true
