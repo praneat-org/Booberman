@@ -39,3 +39,5 @@ packages/protocol @booberman/protocol shared types / schema — ห้าม imp
 1. ติดตั้ง [Claude Code](https://claude.com/claude-code), `gh` (login แล้ว) และทำ Setup ด้านบน
 2. เปิด `claude` ใน repo นี้ → อนุมัติ MCP จาก `.mcp.json` → `/mcp` แล้ว login Linear (workspace Praneat) กับ Atlassian
 3. `/tick be` หรือ `/tick fe`
+
+<!-- CodeRabbit probe: ตรวจว่า CodeRabbit เห็น repo — PR นี้จะถูกปิดโดยไม่ merge -->
