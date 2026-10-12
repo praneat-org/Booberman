@@ -1,20 +1,9 @@
+import { exports } from 'cloudflare:workers';
 import { HEALTH_PATH, type HealthResponse, PROTOCOL_VERSION } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
-import worker from './index';
 
-const ctx = {
-  waitUntil() {},
-  passThroughOnException() {},
-  props: {},
-} as unknown as ExecutionContext;
-
-function call(path: string, init?: RequestInit) {
-  const request = new Request(`http://localhost${path}`, init) as Request<
-    unknown,
-    IncomingRequestCfProperties
-  >;
-  return worker.fetch(request, {}, ctx);
-}
+const call = (path: string, init?: RequestInit) =>
+  exports.default.fetch(`http://localhost${path}`, init);
 
 describe('worker', () => {
   it('GET /api/health returns HealthResponse', async () => {
