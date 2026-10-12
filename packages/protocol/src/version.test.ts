@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isSupportedProtocol, MAX_PLAYERS_PER_ROOM, PROTOCOL_VERSION } from './index';
+import { isSupportedProtocol, MAX_PLAYERS_PER_ROOM, PROTOCOL_VERSION } from './version';
 
-describe('protocol', () => {
-  it('accepts only the current protocol version', () => {
+describe('version', () => {
+  it('is v1 and accepts only itself', () => {
+    expect(PROTOCOL_VERSION).toBe(1);
     expect(isSupportedProtocol(PROTOCOL_VERSION)).toBe(true);
     expect(isSupportedProtocol(PROTOCOL_VERSION + 1)).toBe(false);
   });
