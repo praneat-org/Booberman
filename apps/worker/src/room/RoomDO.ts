@@ -13,7 +13,9 @@ const v = PROTOCOL_VERSION;
 const PLAYER_IDS = ['p1', 'p2', 'p3', 'p4'] as const satisfies readonly PlayerId[];
 
 /** Stored on each socket with serializeAttachment so it survives hibernation. */
-export type Attachment = { joined: false } | { joined: true; playerId: PlayerId; nickname: string };
+export type Attachment =
+  | { joined: false; room: string }
+  | { joined: true; room: string; playerId: PlayerId; nickname: string };
 
 export type Player = { ws: WebSocket; playerId: PlayerId; nickname: string };
 
@@ -30,9 +32,11 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return Response.json({ error: 'UPGRADE_REQUIRED' }, { status: 426 });
     }
+    // the Worker only forwards /ws/room/:id with a valid id, so the last segment is the room
+    const room = decodeURIComponent(new URL(request.url).pathname.split('/').pop() ?? '');
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ joined: false } satisfies Attachment);
+    server.serializeAttachment({ joined: false, room } satisfies Attachment);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -48,6 +52,9 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
         // D7: answer immediately, not on the tick
         return send(ws, { v, t: 'pong', ts: msg.ts });
       case 'join':
+        if (msg.room !== attachmentOf(ws).room) {
+          return this.sendError(ws, 'BAD_MESSAGE', 'join.room does not match the room in the URL');
+        }
         return this.join(ws, msg.nickname);
       case 'input':
       case 'rematch':
@@ -66,8 +73,14 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  override async webSocketError(ws: WebSocket): Promise<void> {
+  /** Treated like a close: the player leaves and the others are told. */
+  override async webSocketError(ws: WebSocket, _error?: unknown): Promise<void> {
     this.leave(ws);
+    try {
+      ws.close(1011, 'error');
+    } catch {
+      // already closed
+    }
   }
 
   /** Everyone who has joined (sorted by playerId), rebuilt from the sockets Cloudflare holds for us. */
@@ -86,13 +99,17 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     const taken = new Set(others.map((p) => p.playerId));
     const playerId = PLAYER_IDS.find((id) => !taken.has(id));
     if (!playerId || others.length >= MAX_PLAYERS_PER_ROOM) {
-      // full guard + tests live in BE-32
       this.sendError(ws, 'ROOM_FULL');
       ws.close(CLOSE_ROOM_FULL, 'ROOM_FULL');
       return;
     }
 
-    ws.serializeAttachment({ joined: true, playerId, nickname } satisfies Attachment);
+    ws.serializeAttachment({
+      joined: true,
+      room: attachmentOf(ws).room,
+      playerId,
+      nickname,
+    } satisfies Attachment);
     send(ws, { v, t: 'welcome', playerId, seed: await this.seed(), grid: exampleGrid() });
     for (const p of others) {
       send(ws, { v, t: 'event', kind: 'playerJoined', playerId: p.playerId, nickname: p.nickname });
@@ -103,7 +120,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   private leave(ws: WebSocket): void {
     const a = attachmentOf(ws);
     if (!a.joined) return;
-    ws.serializeAttachment({ joined: false } satisfies Attachment);
+    ws.serializeAttachment({ joined: false, room: a.room } satisfies Attachment);
     this.broadcast({ v, t: 'event', kind: 'playerLeft', playerId: a.playerId }, ws);
   }
 
@@ -127,7 +144,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 }
 
 export function attachmentOf(ws: WebSocket): Attachment {
-  return (ws.deserializeAttachment() as Attachment | null) ?? { joined: false };
+  return (ws.deserializeAttachment() as Attachment | null) ?? { joined: false, room: '' };
 }
 
 function send(ws: WebSocket, msg: ServerMessage): void {
