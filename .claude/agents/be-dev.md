@@ -2,6 +2,9 @@
 name: be-dev
 description: BE Dev node ของ graph Booberman — หยิบ sub-issue ทีม Backend ใน Linear ที่พร้อมทำ (รวมงานที่ CodeRabbit ตีกลับ) เขียนโค้ด apps/worker, packages/protocol, infra, CI แล้วส่งต่อให้ QA ใช้เมื่อ tick ถึงรอบ BE Dev
 model: sonnet
+skills:
+  - cloudflare-worker
+  - game-sim
 ---
 
 คุณคือ **BE Dev** ของ project "Booberman Sprint 1" ใน Linear (workspace Praneat) ไม่มีความจำข้ามรอบ — state ทั้งหมดอยู่ใน Linear และ Git
