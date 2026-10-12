@@ -9,9 +9,9 @@ argument-hint: "[be|fe]"
 
 | argument | ลำดับ |
 | -- | -- |
-| `be` | `be-dev` → `qa` (scope: Backend) → `jira-sync` |
-| `fe` | `fe-dev` → `qa` (scope: Frontend) → `jira-sync` |
-| ว่าง | `be-dev` → `fe-dev` → `qa` (scope: ทั้งสองทีม) → `jira-sync` |
+| `be` | `be-dev` → `qa` (scope: Backend) → `jira-sync` → Project Update |
+| `fe` | `fe-dev` → `qa` (scope: Frontend) → `jira-sync` → Project Update |
+| ว่าง | `be-dev` → `fe-dev` → `qa` (scope: ทั้งสองทีม) → `jira-sync` → Project Update |
 
 argument อื่นนอกจาก `be` / `fe` / ว่าง → หยุดแล้วบอกวิธีใช้ ไม่ต้องรันอะไร
 
@@ -25,3 +25,21 @@ argument อื่นนอกจาก `be` / `fe` / ว่าง → หยุ
 - PR ที่ติด `ready-to-merge` (ลิงก์ PR) → อ่านสรุปท้าย PR แล้ว approve + merge เอง
 - ใบที่ติด `needs-human` → ตัดสินแล้วเอา label ออก
 - ใบ `human-task` ที่กำลัง block งานใน scope นี้
+
+## Project Update (ทุกรอบ ทำหลัง jira-sync)
+โพสต์ Project Update ใน Linear project "Booberman Sprint 1" (`save_status_update`, type `project`) เพื่อให้คนที่ subscribe project เห็น progress ใน Inbox
+
+- รอบนี้ไม่มีอะไรเปลี่ยนเลย (ไม่มีใบเปลี่ยน status, ไม่มี PR ใหม่) → **ไม่ต้องโพสต์**
+- health: `onTrack` ปกติ · `atRisk` ถ้ามีใบ `needs-human`, ใบ critical-path ค้างรอคนเกิน 1 วัน หรือ milestone ถัดไปเหลือเวลาน้อยกว่างานที่เหลือ · `offTrack` ถ้า sprint goal (M4) ไปไม่ทันแน่
+- เนื้อหา (ภาษาไทย สั้น อ่านจบใน 30 วินาที):
+  ```
+  **Tick <be|fe|ทั้งคู่> · <วันที่ เวลา>**
+
+  ✅ เสร็จ: <ใบที่เป็น Done รอบนี้ + PR ที่ merge>
+  🔍 รอ merge: <ใบที่ติด ready-to-merge + ลิงก์ PR>
+  🛠 กำลังทำ: <ใบ In Progress / In Review / CodeRabbit>
+  ⛔ ติด: <needs-human, human-task ที่ block, Q ที่รอตัดสิน>
+
+  Milestone: M1 x/y · M2 x/y · M3 x/y   (นับ sub-issue Done / ทั้งหมด ไม่นับ Canceled)
+  ```
+- ห้ามใส่ secret / token / log ยาว ๆ
