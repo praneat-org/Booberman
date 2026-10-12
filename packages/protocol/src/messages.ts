@@ -1,17 +1,37 @@
 import { z } from 'zod';
 import { Grid, PosX, PosY, Seed, TileX, TileY } from './board';
+import { validateNickname } from './nickname';
 import { MAX_PLAYERS_PER_ROOM, PROTOCOL_VERSION } from './version';
 
 const v = z.literal(PROTOCOL_VERSION);
 
 export const PlayerId = z.string().regex(/^p[1-4]$/, 'playerId is p1..p4');
 export const RoomId = z.string().regex(/^[a-z0-9]{4,12}$/, 'room id is 4-12 chars a-z 0-9');
-/** Final nickname rules (length, allowed characters) come with BE-35. */
-export const Nickname = z.string().trim().min(1).max(16);
+/**
+ * BE-35: validates with `validateNickname` and outputs the trimmed value.
+ * A rule failure is a `custom` issue whose `params.nicknameReason` is the reason,
+ * which `parse.ts` turns into the `INVALID_NICKNAME` error code (a wrong type stays BAD_MESSAGE).
+ */
+export const Nickname = z.string().transform((raw, ctx) => {
+  const r = validateNickname(raw);
+  if (r.ok) return r.value;
+  ctx.issues.push({
+    code: 'custom',
+    message: r.reason,
+    input: raw,
+    params: { nicknameReason: r.reason },
+  });
+  return z.NEVER;
+});
 export const Direction = z.enum(['up', 'down', 'left', 'right', 'none']);
 export const ItemKind = z.enum(['curse', 'kick']);
 
-export const ErrorCode = z.enum(['BAD_MESSAGE', 'VERSION_MISMATCH', 'ROOM_FULL']);
+export const ErrorCode = z.enum([
+  'BAD_MESSAGE',
+  'VERSION_MISMATCH',
+  'ROOM_FULL',
+  'INVALID_NICKNAME',
+]);
 export type ErrorCode = z.infer<typeof ErrorCode>;
 
 // ── Client → Server ─────────────────────────────────────────────────────────

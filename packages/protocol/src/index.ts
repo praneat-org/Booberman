@@ -7,5 +7,6 @@ export * from './board';
 export * from './fixtures';
 export * from './health';
 export * from './messages';
+export * from './nickname';
 export * from './parse';
 export * from './version';
