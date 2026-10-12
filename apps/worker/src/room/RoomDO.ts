@@ -8,6 +8,9 @@ import {
   parseClientMessage,
   type ServerMessage,
 } from '@booberman/protocol';
+import { createInitialState, type GameState, simulate, toSnapshot } from '../game';
+import { InputQueue } from './inputQueue';
+import { TickStats } from './tickStats';
 
 const v = PROTOCOL_VERSION;
 const PLAYER_IDS = ['p1', 'p2', 'p3', 'p4'] as const satisfies readonly PlayerId[];
@@ -24,12 +27,36 @@ export const CLOSE_ROOM_FULL = 4001;
 /** Close code sent with INVALID_NICKNAME (BE-35). */
 export const CLOSE_INVALID_NICKNAME = 4002;
 
+/** 20Hz game loop (CAR-3793). */
+export const TICK_MS = 50;
+/** One `tick-stats` log line every this many ticks (5 s). */
+export const STATS_LOG_EVERY_TICKS = 100;
+
 /**
  * One Durable Object = one room (`idFromName(roomId)`).
  * Uses the WebSocket Hibernation API: nothing about players lives only in memory —
  * the player list is always rebuilt from `ctx.getWebSockets()` + attachments.
  */
 export class RoomDO extends DurableObject<Cloudflare.Env> {
+  // In-memory only, all rebuildable: the tick loop keeps the DO awake while anyone is in the room,
+  // an empty room has nothing worth keeping, and after an eviction (deploy) the constructor
+  // restarts the loop from the persisted seed and the sockets' attachments.
+  private loop: ReturnType<typeof setInterval> | null = null;
+  private state: GameState | undefined;
+  private seedCache: number | undefined;
+  private room = '';
+  private readonly queue = new InputQueue();
+  private readonly stats = new TickStats();
+
+  constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
+    super(ctx, env);
+    void ctx.blockConcurrencyWhile(async () => {
+      if (this.players().length === 0) return;
+      this.seedCache = await this.seed();
+      this.startLoop();
+    });
+  }
+
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
       return Response.json({ error: 'UPGRADE_REQUIRED' }, { status: 426 });
@@ -64,10 +91,17 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
           return this.sendError(ws, 'BAD_MESSAGE', 'join.room does not match the room in the URL');
         }
         return this.join(ws, msg.nickname);
-      case 'input':
+      case 'input': {
+        const a = attachmentOf(ws);
+        if (!a.joined) return this.sendError(ws, 'BAD_MESSAGE', 'join first');
+        // dropped inputs (stale seq / over the rate limit) are silent: there is no error code for
+        // them and a spammer should not get a reply per message
+        this.queue.offer(a.playerId, { dir: msg.dir, bomb: msg.bomb, seq: msg.seq }, Date.now());
+        return;
+      }
       case 'rematch':
         if (!attachmentOf(ws).joined) return this.sendError(ws, 'BAD_MESSAGE', 'join first');
-        // handled by the tick loop (BE-33) and rematch (BE-41)
+        // rematch: BE-41
         return;
     }
   }
@@ -118,18 +152,88 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       playerId,
       nickname,
     } satisfies Attachment);
-    send(ws, { v, t: 'welcome', playerId, seed: await this.seed(), grid: exampleGrid() });
+    const seed = await this.seed();
+    this.seedCache = seed;
+    this.room = attachmentOf(ws).room;
+    send(ws, { v, t: 'welcome', playerId, seed, grid: exampleGrid() });
     for (const p of others) {
       send(ws, { v, t: 'event', kind: 'playerJoined', playerId: p.playerId, nickname: p.nickname });
     }
     this.broadcast({ v, t: 'event', kind: 'playerJoined', playerId, nickname }, ws);
+    this.startLoop();
   }
 
   private leave(ws: WebSocket): void {
     const a = attachmentOf(ws);
     if (!a.joined) return;
     ws.serializeAttachment({ joined: false, room: a.room } satisfies Attachment);
+    this.queue.remove(a.playerId);
     this.broadcast({ v, t: 'event', kind: 'playerLeft', playerId: a.playerId }, ws);
+    if (this.players().length === 0) this.stopLoop();
+  }
+
+  /** True while the 20Hz interval is armed (tests; an armed interval keeps the DO from hibernating). */
+  isTicking(): boolean {
+    return this.loop !== null;
+  }
+
+  /** Tick count and duration percentiles since the loop last started. */
+  tickStats() {
+    return { ...this.stats.summary(), inputs: { ...this.queue.counters } };
+  }
+
+  private startLoop(): void {
+    if (this.loop !== null) return;
+    this.loop = setInterval(() => this.tick(), TICK_MS);
+  }
+
+  /** Clears the interval at once and forgets the round state (the next first player starts fresh). */
+  private stopLoop(): void {
+    if (this.loop !== null) clearInterval(this.loop);
+    this.loop = null;
+    this.state = undefined;
+    this.queue.clear();
+    if (this.stats.total > 0) this.logStats('tick-stats-final');
+    this.stats.reset();
+  }
+
+  private tick(): void {
+    const players = this.players();
+    if (players.length === 0 || this.seedCache === undefined) {
+      this.stopLoop();
+      return;
+    }
+    const started = performance.now();
+    try {
+      const { state, events } = simulate(this.syncPlayers(players), this.queue.drain());
+      this.state = state;
+      for (const e of events) this.broadcast(e);
+      for (const p of players) send(p.ws, toSnapshot(state, p.playerId));
+    } catch (error) {
+      console.error(JSON.stringify({ msg: 'tick-failed', error: String(error) }));
+    }
+    // note: workerd's clock only advances on I/O, so on a pure CPU tick this can read 0
+    this.stats.record(performance.now() - started);
+    if (this.stats.total % STATS_LOG_EVERY_TICKS === 0) this.logStats('tick-stats');
+  }
+
+  /** Game state follows the sockets: new first tick, a late joiner or a leaver all land here. */
+  private syncPlayers(players: Player[]): GameState {
+    const ids = players.map((p) => p.playerId);
+    const seed = this.seedCache ?? 0;
+    const state = this.state;
+    if (!state) return createInitialState(seed, ids);
+    const known = new Set(state.players.map((p) => p.id));
+    if (ids.length === known.size && ids.every((id) => known.has(id))) return state;
+    const kept = state.players.filter((p) => ids.includes(p.id));
+    const added = ids
+      .filter((id) => !known.has(id))
+      .flatMap((id) => createInitialState(seed, [id]).players);
+    return { ...state, players: [...kept, ...added].sort((a, b) => a.id.localeCompare(b.id)) };
+  }
+
+  private logStats(msg: string): void {
+    console.log(JSON.stringify({ msg, room: this.room, ...this.tickStats() }));
   }
 
   private broadcast(msg: ServerMessage, except?: WebSocket): void {
