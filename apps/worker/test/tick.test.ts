@@ -16,6 +16,30 @@ const roomState = (room: string) =>
 const input = (c: Client, seq: number, dir = 'right', bomb = false) =>
   c.send({ v, t: 'input', seq, dir, bomb });
 
+describe('leave clears the slot in the game state', () => {
+  it('a leaver is removed from the state at once, so a rejoin into the slot starts fresh', async () => {
+    const a = await join('leave1', 'A');
+    const b = await join('leave1', 'B');
+    input(b, 7, 'down');
+    await b.next((m) => m.t === 'snapshot' && m.ackSeq === 7);
+    // freeze the loop so no tick can resync the players between the leave and the check
+    await runInDurableObject(stubFor('leave1'), (room: RoomDO) => {
+      const r = room as unknown as { loop: ReturnType<typeof setInterval> | null };
+      if (r.loop !== null) clearInterval(r.loop);
+      r.loop = null;
+    });
+    b.close();
+    await sleep(100);
+    const ids = await runInDurableObject(stubFor('leave1'), (room: RoomDO) =>
+      (room as unknown as { state?: { players: { id: string }[] } }).state?.players.map(
+        (p) => p.id,
+      ),
+    );
+    expect(ids).toEqual(['p1']);
+    a.close();
+  });
+});
+
 describe('tick loop 20Hz (AC 1, 2)', () => {
   it('one player gets about 20 snapshots in one second, then nothing once the room is empty', async () => {
     const a = await join('tick1', 'A');

@@ -169,6 +169,14 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (!a.joined) return;
     ws.serializeAttachment({ joined: false, room: a.room } satisfies Attachment);
     this.queue.remove(a.playerId);
+    // drop the leaver from the game state now, not on the next tick: someone who joins into the
+    // same slot within one tick must start fresh (spawn, ackSeq 0), not inherit the old PlayerSim
+    if (this.state) {
+      this.state = {
+        ...this.state,
+        players: this.state.players.filter((p) => p.id !== a.playerId),
+      };
+    }
     this.broadcast({ v, t: 'event', kind: 'playerLeft', playerId: a.playerId }, ws);
     if (this.players().length === 0) this.stopLoop();
   }
