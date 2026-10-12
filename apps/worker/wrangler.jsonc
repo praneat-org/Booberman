@@ -1,0 +1,8 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "booberman",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true }
+  // env dev / production, Durable Objects, KV, D1, assets: added by later issues (BE-26, BE-28, BE-31)
+}
