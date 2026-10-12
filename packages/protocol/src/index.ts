@@ -9,4 +9,5 @@ export * from './health';
 export * from './messages';
 export * from './nickname';
 export * from './parse';
+export * from './rooms';
 export * from './version';
