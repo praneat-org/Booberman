@@ -122,7 +122,15 @@ describe('determinism', () => {
   it('actually moves players (the test is not vacuous)', () => {
     const { state } = run(123, 777);
     expect(state.tick).toBe(500);
-    expect(state.players.some((p) => p.x !== 1 || p.y !== 1)).toBe(true);
+    // compare each player with its own spawn point, not with p1's
+    const spawn = new Map(
+      createInitialState(123, ['p1', 'p2', 'p3', 'p4']).players.map((p) => [p.id, p]),
+    );
+    const moved = state.players.filter((p) => {
+      const s = spawn.get(p.id);
+      return s !== undefined && (p.x !== s.x || p.y !== s.y);
+    });
+    expect(moved.length).toBeGreaterThan(0);
   });
 
   it('the PRNG state lives inside GameState and is seeded from the match seed', () => {
