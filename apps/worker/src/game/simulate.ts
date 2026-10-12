@@ -1,4 +1,5 @@
-import { GRID_HEIGHT, GRID_WIDTH } from '@booberman/protocol';
+import { isWalkable } from './board';
+import { DEFAULT_CONFIG } from './config';
 import type {
   Dir,
   GameConfig,
@@ -9,7 +10,7 @@ import type {
   StepResult,
 } from './types';
 
-export const DEFAULT_CONFIG: GameConfig = { playerSpeed: 0.25 };
+export { DEFAULT_CONFIG };
 
 const VECTORS: Record<Dir, readonly [dx: number, dy: number]> = {
   up: [0, -1],
@@ -19,20 +20,47 @@ const VECTORS: Record<Dir, readonly [dx: number, dy: number]> = {
   none: [0, 0],
 };
 
-const clamp = (v: number, max: number) => Math.min(Math.max(v, 0), max);
+/** Tile the step in direction `dir` ends on, given where the player is now. */
+function stepTarget(x: number, y: number, dir: Dir): readonly [number, number] {
+  const [dx, dy] = VECTORS[dir];
+  return [
+    dx > 0 ? Math.ceil(x) : dx < 0 ? Math.floor(x) : x,
+    dy > 0 ? Math.ceil(y) : dy < 0 ? Math.floor(y) : y,
+  ];
+}
 
-function step(p: PlayerSim, input: PlayerInput | undefined, cfg: GameConfig): PlayerSim {
-  if (!input) return p;
-  const ackSeq = Math.max(p.ackSeq, input.seq);
-  if (!p.alive) return { ...p, ackSeq };
+/** Move up to `speed` tiles toward (tx, ty); snaps onto the tile when it is reached. */
+function advance(p: PlayerSim, dir: Dir, tx: number, ty: number, speed: number): PlayerSim {
+  const [dx, dy] = VECTORS[dir];
+  const x = dx === 0 ? p.x : dx > 0 ? Math.min(p.x + speed, tx) : Math.max(p.x - speed, tx);
+  const y = dy === 0 ? p.y : dy > 0 ? Math.min(p.y + speed, ty) : Math.max(p.y - speed, ty);
+  const arrived = x === tx && y === ty;
+  return { ...p, x, y, walkDir: arrived ? 'none' : dir };
+}
+
+/**
+ * Players walk one tile at a time (`walkTicksPerTile` ticks per tile). A step
+ * in progress always finishes; a new step starts from a tile centre and only
+ * if the next tile is floor. Other players never block.
+ */
+function walk(p: PlayerSim, input: PlayerInput | undefined, grid: string, cfg: GameConfig) {
+  const midStep = p.walkDir !== undefined && p.walkDir !== 'none';
+  if (midStep) {
+    const [tx, ty] = stepTarget(p.x, p.y, p.walkDir ?? 'none');
+    return advance(p, p.walkDir ?? 'none', tx, ty, cfg.playerSpeed);
+  }
+  if (!input || input.dir === 'none') return p;
   const [dx, dy] = VECTORS[input.dir];
-  return {
-    ...p,
-    // BE-29: only the board edge stops a player. Walls, boxes and bombs come with CAR-3795.
-    x: clamp(p.x + dx * cfg.playerSpeed, GRID_WIDTH - 1),
-    y: clamp(p.y + dy * cfg.playerSpeed, GRID_HEIGHT - 1),
-    ackSeq,
-  };
+  const tx = p.x + dx;
+  const ty = p.y + dy;
+  if (!isWalkable(grid, tx, ty)) return p;
+  return advance(p, input.dir, tx, ty, cfg.playerSpeed);
+}
+
+function step(p: PlayerSim, input: PlayerInput | undefined, grid: string, cfg: GameConfig) {
+  const ackSeq = input ? Math.max(p.ackSeq, input.seq) : p.ackSeq;
+  if (!p.alive) return { ...p, ackSeq };
+  return { ...walk(p, input, grid, cfg), ackSeq };
 }
 
 /**
@@ -48,7 +76,7 @@ export function simulate(
     state: {
       ...state,
       tick: state.tick + 1,
-      players: state.players.map((p) => step(p, inputs.get(p.id), cfg)),
+      players: state.players.map((p) => step(p, inputs.get(p.id), state.grid, cfg)),
     },
     events: [],
   };

@@ -11,7 +11,7 @@ declare global {
 }
 
 // Every non-test source file in game/ as raw text (resolved by Vite at build time).
-const sources = import.meta.glob(['./*.ts', '!./*.test.ts'], {
+const sources = import.meta.glob(['./**/*.ts', '!./**/*.test.ts'], {
   query: '?raw',
   import: 'default',
   eager: true,
@@ -32,10 +32,21 @@ const FORBIDDEN = [
 
 describe('game/ stays deterministic and platform-free', () => {
   it('finds the source files', () => {
-    expect(Object.keys(sources).length).toBeGreaterThanOrEqual(4);
+    expect(Object.keys(sources).length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('scans recursively (sub-folders of game/ are covered too)', () => {
+    expect(Object.keys(sources)).toContain('./config.ts');
+    expect(Object.keys(sources)).toContain('./board.ts');
   });
 
   for (const [file, text] of Object.entries(sources)) {
+    if (file !== './config.ts') {
+      it(`${file} has no 4 / 40 / 10 / 3000 balance literal (they live in config.ts)`, () => {
+        expect(stripComments(text), file).not.toMatch(/(?<![\w.])(?:4|40|10|3000)(?![\w.])/);
+      });
+    }
+
     it(`${file} has no Math.random / Date.now / Workers API`, () => {
       const code = stripComments(text);
       for (const re of FORBIDDEN) expect(code, `${file} matches ${re}`).not.toMatch(re);

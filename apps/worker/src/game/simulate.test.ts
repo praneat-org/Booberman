@@ -26,35 +26,104 @@ describe('createInitialState', () => {
   });
 });
 
+/** Open arena: border walls only, so walking tests are not tied to a random board. */
+const openState = (ids: PlayerId[] = ['p1']): GameState => {
+  const s = createInitialState(1, ids);
+  let grid = '';
+  for (let y = 0; y < GRID_HEIGHT; y++)
+    for (let x = 0; x < GRID_WIDTH; x++)
+      grid += x === 0 || y === 0 || x === GRID_WIDTH - 1 || y === GRID_HEIGHT - 1 ? '#' : '.';
+  return { ...s, grid };
+};
+
+const hold = (s: GameState, dir: Dir, ticks: number, id: PlayerId = 'p1'): GameState => {
+  let cur = s;
+  for (let i = 0; i < ticks; i++)
+    cur = simulate(cur, inputs({ [id]: input(dir, cur.tick + 1) })).state;
+  return cur;
+};
+
 describe('simulate: walking', () => {
-  it('moves playerSpeed tiles per tick in the pressed direction', () => {
-    const s0 = createInitialState(1, ['p1']);
+  it('walks one tile in walkTicksPerTile ticks (4 ticks = 0.2 s)', () => {
+    const s0 = openState();
     const { state } = simulate(s0, inputs({ p1: input('right') }));
     expect(pos(state, 'p1')).toEqual({ x: 1 + DEFAULT_CONFIG.playerSpeed, y: 1 });
     expect(state.tick).toBe(1);
+    expect(pos(hold(s0, 'right', DEFAULT_CONFIG.walkTicksPerTile), 'p1')).toEqual({ x: 2, y: 1 });
+  });
+
+  it('a step already started finishes even if the key is released', () => {
+    const mid = hold(openState(), 'right', 1);
+    const end = hold(mid, 'none', DEFAULT_CONFIG.walkTicksPerTile - 1);
+    expect(pos(end, 'p1')).toEqual({ x: 2, y: 1 });
+    expect(pos(hold(end, 'none', 10), 'p1')).toEqual({ x: 2, y: 1 });
+  });
+
+  it('cannot change direction mid-step, only at the next tile', () => {
+    const mid = hold(openState(), 'right', 1);
+    const turned = hold(mid, 'down', DEFAULT_CONFIG.walkTicksPerTile - 1);
+    expect(pos(turned, 'p1')).toEqual({ x: 2, y: 1 });
+    expect(pos(hold(turned, 'down', DEFAULT_CONFIG.walkTicksPerTile), 'p1')).toEqual({
+      x: 2,
+      y: 2,
+    });
   });
 
   it('dir none / no input keeps the player still', () => {
-    const s0 = createInitialState(1, ['p1']);
+    const s0 = openState();
     expect(pos(simulate(s0, inputs({ p1: input('none') })).state, 'p1')).toEqual({ x: 1, y: 1 });
     expect(pos(simulate(s0, inputs({})).state, 'p1')).toEqual({ x: 1, y: 1 });
   });
 
-  it('stops at every board edge', () => {
+  it('stops at every board edge (border wall)', () => {
     for (const [dir, expected] of [
-      ['left', { x: 0, y: 1 }],
-      ['up', { x: 1, y: 0 }],
-      ['right', { x: GRID_WIDTH - 1, y: 1 }],
-      ['down', { x: 1, y: GRID_HEIGHT - 1 }],
+      ['left', { x: 1, y: 1 }],
+      ['up', { x: 1, y: 1 }],
+      ['right', { x: GRID_WIDTH - 2, y: 1 }],
+      ['down', { x: 1, y: GRID_HEIGHT - 2 }],
     ] as const) {
-      let s = createInitialState(1, ['p1']);
-      for (let i = 0; i < 200; i++) s = simulate(s, inputs({ p1: input(dir, i + 1) })).state;
-      expect(pos(s, 'p1')).toEqual(expected);
+      expect(pos(hold(openState(), dir, 200), 'p1')).toEqual(expected);
     }
   });
 
+  it('stops in front of a wall', () => {
+    const s0 = openState();
+    const grid = s0.grid.split('');
+    grid[1 * GRID_WIDTH + 4] = '#';
+    const s = hold({ ...s0, grid: grid.join('') }, 'right', 100);
+    expect(pos(s, 'p1')).toEqual({ x: 3, y: 1 });
+  });
+
+  it('stops in front of a box and does not break it', () => {
+    const s0 = openState();
+    const grid = s0.grid.split('');
+    grid[1 * GRID_WIDTH + 3] = 'x';
+    const s = hold({ ...s0, grid: grid.join('') }, 'right', 100);
+    expect(pos(s, 'p1')).toEqual({ x: 2, y: 1 });
+    expect(s.grid[1 * GRID_WIDTH + 3]).toBe('x');
+  });
+
+  it('walks through other players', () => {
+    const s0 = openState(['p1', 'p2']);
+    // put p2 on the tile p1 walks into
+    const s: GameState = {
+      ...s0,
+      players: s0.players.map((p) => (p.id === 'p2' ? { ...p, x: 2, y: 1 } : p)),
+    };
+    const after = hold(s, 'right', DEFAULT_CONFIG.walkTicksPerTile * 2);
+    expect(pos(after, 'p1')).toEqual({ x: 3, y: 1 });
+    expect(pos(after, 'p2')).toEqual({ x: 2, y: 1 });
+  });
+
+  it('speed override still lands exactly on tiles', () => {
+    let s = openState();
+    const cfg = { ...DEFAULT_CONFIG, playerSpeed: 0.3 };
+    for (let i = 0; i < 4; i++) s = simulate(s, inputs({ p1: input('right', i + 1) }), cfg).state;
+    expect(pos(s, 'p1')).toEqual({ x: 2, y: 1 });
+  });
+
   it('dead players do not move', () => {
-    const s0 = createInitialState(1, ['p1']);
+    const s0 = openState();
     const dead: GameState = { ...s0, players: s0.players.map((p) => ({ ...p, alive: false })) };
     expect(pos(simulate(dead, inputs({ p1: input('right') })).state, 'p1')).toEqual({
       x: 1,
