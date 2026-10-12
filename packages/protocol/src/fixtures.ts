@@ -78,6 +78,8 @@ export const exampleSnapshot = {
 export const exampleServerMessages = {
   welcome: { v, t: 'welcome', playerId: 'p2', seed: 4821, grid: exampleGrid() },
   snapshot: exampleSnapshot,
+  playerJoined: { v, t: 'event', kind: 'playerJoined', playerId: 'p3', nickname: 'บอส' },
+  playerLeft: { v, t: 'event', kind: 'playerLeft', playerId: 'p3' },
   boxDestroyed: { v, t: 'event', kind: 'boxDestroyed', x: 4, y: 3 },
   roundStart: { v, t: 'event', kind: 'roundStart', seed: 99, grid: exampleGrid() },
   rematchStatus: {

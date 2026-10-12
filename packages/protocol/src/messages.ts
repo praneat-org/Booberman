@@ -103,8 +103,22 @@ export const RematchStatusEvent = z.object({
   ready: z.array(PlayerId).max(MAX_PLAYERS_PER_ROOM),
   deadline: z.number().int().min(0),
 });
+/** BE-28: someone joined the room (also replayed to a newcomer for everyone already there). */
+export const PlayerJoinedEvent = z.object({
+  ...event,
+  kind: z.literal('playerJoined'),
+  playerId: PlayerId,
+  nickname: Nickname,
+});
+export const PlayerLeftEvent = z.object({
+  ...event,
+  kind: z.literal('playerLeft'),
+  playerId: PlayerId,
+});
 /** Add new kinds here (kill, roundEnd, …) in the issues that need them. */
 export const EventMessage = z.discriminatedUnion('kind', [
+  PlayerJoinedEvent,
+  PlayerLeftEvent,
   BoxDestroyedEvent,
   RoundStartEvent,
   RematchStatusEvent,
@@ -131,4 +145,5 @@ export const ServerMessage = z.discriminatedUnion('t', [
 export type ServerMessage = z.infer<typeof ServerMessage>;
 
 export type PlayerState = z.infer<typeof PlayerState>;
+export type PlayerId = z.infer<typeof PlayerId>;
 export type GameEvent = z.infer<typeof EventMessage>;

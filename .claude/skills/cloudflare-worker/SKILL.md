@@ -70,7 +70,7 @@ export class RoomDO extends DurableObject<Env> {
 
 ## ทดสอบ
 - **unit:** game logic (pure) ด้วย vitest ธรรมดา
-- **integration:** `@cloudflare/vitest-pool-workers` (ใช้ vitest 4.x) รัน Worker + DO จริงใน workerd · ทดสอบ WebSocket ด้วย `SELF.fetch('http://x/ws/room/abc', { headers: { Upgrade: 'websocket' } })`
+- **integration:** `@cloudflare/vitest-plugin` (ชื่อใหม่ของ `vitest-pool-workers` · ตั้งใน `apps/worker/vitest.config.ts` ด้วย `cloudflareTest({ wrangler: { configPath } })`) รัน Worker + DO จริงใน workerd · เปิด socket ด้วย `exports.default.fetch('http://localhost/ws/room/abc', { headers: { Upgrade: 'websocket' } })` (`import { exports, env } from 'cloudflare:workers'`) แล้ว `res.webSocket.accept()` · helper `Client` / `join()` อยู่ใน `apps/worker/test/helpers.ts` · ดูข้างใน DO ด้วย `runInDurableObject`, จำลอง hibernation ด้วย `evictDurableObject` (จาก `cloudflare:test`)
 - **มือ / QA:** `pnpm --filter @booberman/worker dev` (wrangler dev ที่ :8787) แล้วยิงด้วย `curl` / script `wscat`-like
 - ทุก error ที่ส่งกลับ client ใช้ error code จาก protocol (เช่น `ROOM_FULL`) ไม่ส่ง stack
 
