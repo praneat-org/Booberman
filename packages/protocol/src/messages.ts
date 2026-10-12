@@ -31,6 +31,10 @@ export const InputMessage = z.strictObject({
   seq: z.number().int().min(0),
   dir: Direction,
   bomb: z.boolean(),
+  /** Client-side prediction: the client reports where it thinks it is so the server can trust it. */
+  x: PosX.optional(),
+  y: PosY.optional(),
+  alive: z.boolean().optional(),
 });
 export const PingMessage = z.strictObject({ v, t: z.literal('ping'), ts: z.number() });
 /** D9: "play again" — ready up; the round restarts when everyone is ready or 15 s pass. */
