@@ -8,7 +8,7 @@ import {
   RoomsApiErrorCode,
 } from '@booberman/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { generateRoomId, listRooms } from '../src/api/rooms';
+import { CREATE_ROOM_ATTEMPTS, createRoom, generateRoomId, listRooms } from '../src/api/rooms';
 
 let nextIp = 0;
 const freshIp = () => `10.0.0.${++nextIp}`;
@@ -66,7 +66,49 @@ describe('POST /api/rooms', () => {
   });
 });
 
+describe('POST /api/rooms id collisions', () => {
+  const limiter = { limit: async () => ({ success: true }) } as unknown as RateLimit;
+  const req = () => new Request(`http://localhost${ROOMS_PATH}`, { method: 'POST' });
+
+  it('skips an id that already exists and never overwrites its metadata', async () => {
+    const taken = { players: 2, max: 4, createdAt: 123 };
+    await env.ROOMS.put('room:takenid', '', { metadata: taken });
+    const ids = ['takenid', 'freshid'];
+    const res = await createRoom(
+      req(),
+      { ROOMS: env.ROOMS, ROOM_CREATE_LIMITER: limiter },
+      () => ids.shift() ?? 'zzzzzz',
+    );
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as CreateRoomResponse).roomId).toBe('freshid');
+    expect((await env.ROOMS.getWithMetadata('room:takenid')).metadata).toEqual(taken);
+  });
+
+  it(`gives up with 503 ROOM_ID_UNAVAILABLE after ${CREATE_ROOM_ATTEMPTS} taken ids`, async () => {
+    await env.ROOMS.put('room:alwaysid', '', { metadata: { players: 1, max: 4, createdAt: 1 } });
+    const res = await createRoom(
+      req(),
+      { ROOMS: env.ROOMS, ROOM_CREATE_LIMITER: limiter },
+      () => 'alwaysid',
+    );
+    expect(res.status).toBe(503);
+    expect(RoomsApiErrorCode.parse(((await res.json()) as { error: string }).error)).toBe(
+      'ROOM_ID_UNAVAILABLE',
+    );
+  });
+});
+
 describe('GET /api/rooms', () => {
+  it('follows the KV.list cursor past the first page', async () => {
+    const ids = ['pagea1', 'pagea2', 'pagea3', 'pagea4', 'pagea5'];
+    for (const [i, id] of ids.entries()) {
+      await env.ROOMS.put(`room:${id}`, '', { metadata: { players: 0, max: 4, createdAt: i } });
+    }
+    const body: ListRoomsResponse = await (await listRooms({ ROOMS: env.ROOMS }, 2)).json();
+    const got = body.rooms.map((r) => r.roomId);
+    for (const id of ids) expect(got).toContain(id);
+  });
+
   it('hides full rooms and ignores keys with bad metadata', async () => {
     await env.ROOMS.put('room:openroom', '', { metadata: { players: 3, max: 4, createdAt: 1 } });
     await env.ROOMS.put('room:fullroom', '', { metadata: { players: 4, max: 4, createdAt: 2 } });

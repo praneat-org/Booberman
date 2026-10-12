@@ -33,5 +33,5 @@ export const ListRoomsResponse = z.object({ rooms: z.array(RoomSummary) });
 export type ListRoomsResponse = z.infer<typeof ListRoomsResponse>;
 
 /** `{ error }` codes of the rooms HTTP API (separate from the WebSocket `ErrorCode`). */
-export const RoomsApiErrorCode = z.enum(['RATE_LIMITED']);
+export const RoomsApiErrorCode = z.enum(['RATE_LIMITED', 'ROOM_ID_UNAVAILABLE']);
 export type RoomsApiErrorCode = z.infer<typeof RoomsApiErrorCode>;
