@@ -1,7 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   type ErrorCode,
-  exampleGrid,
   MAX_PLAYERS_PER_ROOM,
   type PlayerId,
   PROTOCOL_VERSION,
@@ -155,7 +154,9 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     const seed = await this.seed();
     this.seedCache = seed;
     this.room = attachmentOf(ws).room;
-    send(ws, { v, t: 'welcome', playerId, seed, grid: exampleGrid() });
+    // the board comes from the game state (seeded board once BE-36 lands), never a fixed sample
+    const grid = this.state?.grid ?? createInitialState(seed, [playerId]).grid;
+    send(ws, { v, t: 'welcome', playerId, seed, grid });
     for (const p of others) {
       send(ws, { v, t: 'event', kind: 'playerJoined', playerId: p.playerId, nickname: p.nickname });
     }
