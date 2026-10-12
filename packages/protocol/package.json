@@ -6,7 +6,10 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test",
     "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5"
   }
 }
