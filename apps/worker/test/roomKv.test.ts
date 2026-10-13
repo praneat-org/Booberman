@@ -296,6 +296,34 @@ describe('RoomKvSync (unit, fake KV + fake timers)', () => {
     errorLog.mockRestore();
   });
 
+  it('a join while the delete is in flight keeps the room listed (base is not cleared)', async () => {
+    vi.useFakeTimers();
+    const { kv, puts, deletes, raw } = fakeKv();
+    const sync = new RoomKvSync(kv, 'r1');
+    sync.update(1);
+    await settle();
+    let finishDelete: () => void = () => {};
+    raw.delete.mockImplementationOnce(
+      (k: string) =>
+        new Promise<void>((resolve) => {
+          finishDelete = () => {
+            deletes.push(k);
+            resolve();
+          };
+        }),
+    );
+    // after the delete the key is gone: reading it again would find nothing
+    raw.getWithMetadata.mockResolvedValue({ value: '', metadata: null, cacheStatus: null });
+    sync.update(0);
+    await settle(ROOM_KV_MIN_WRITE_INTERVAL_MS); // delete starts and hangs
+    sync.update(2); // someone joins while it is in flight
+    finishDelete();
+    await settle(ROOM_KV_MIN_WRITE_INTERVAL_MS);
+    expect(deletes).toEqual(['room:r1']);
+    expect(puts.map((p) => p.players)).toEqual([1, 2]);
+    expect(puts.at(-1)).toMatchObject({ createdAt: 123, max: 4 });
+  });
+
   it('heartbeat renews only after the renew interval; first call after a restart writes at once', async () => {
     vi.useFakeTimers();
     const { kv, puts } = fakeKv();

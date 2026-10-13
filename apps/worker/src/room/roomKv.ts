@@ -79,8 +79,10 @@ export class RoomKvSync {
       if (target === 0) {
         await this.kv.delete(this.key);
         this.counters.deletes++;
-        // an emptied room is gone from the lobby; a later joiner must not resurrect old metadata
-        this.base = undefined;
+        // an emptied room is gone from the lobby; a later joiner must not resurrect old metadata.
+        // But if someone joined while the delete was in flight, keep `base`: the next flush re-lists
+        // the room (the key it would read is gone, so clearing here would leave an occupied room unlisted)
+        if (this.desired === 0) this.base = undefined;
       } else {
         this.base ??= await this.readBase();
         if (this.base === undefined) {
