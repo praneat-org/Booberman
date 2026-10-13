@@ -25,6 +25,7 @@ export const Nickname = z.string().transform((raw, ctx) => {
 });
 export const Direction = z.enum(['up', 'down', 'left', 'right', 'none']);
 export const ItemKind = z.enum(['curse', 'kick']);
+export type ItemKind = z.infer<typeof ItemKind>;
 
 export const ErrorCode = z.enum([
   'BAD_MESSAGE',

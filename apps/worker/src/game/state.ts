@@ -11,7 +11,7 @@ export function createInitialState(seed: number, players: readonly PlayerId[]): 
     const spawn = SPAWNS[id];
     if (!spawn) throw new Error(`unknown player id: ${id}`);
     const [x, y] = spawn;
-    return { id, x, y, alive: true, curse: 0, ackSeq: 0 };
+    return { id, x, y, alive: true, curse: 0, ackSeq: 0, heldDir: 'none' };
   });
   const { grid, rngSeed } = createBoard(seed);
   return {
@@ -20,5 +20,8 @@ export function createInitialState(seed: number, players: readonly PlayerId[]): 
     rngSeed,
     grid,
     players: sims,
+    bombs: [],
+    flames: [],
+    items: [],
   };
 }

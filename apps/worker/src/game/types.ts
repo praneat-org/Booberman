@@ -1,4 +1,4 @@
-import type { GameEvent, PlayerId } from '@booberman/protocol';
+import type { GameEvent, ItemKind, PlayerId } from '@booberman/protocol';
 
 export type { GameConfig } from './config';
 export type { PlayerId };
@@ -24,6 +24,38 @@ export interface PlayerSim {
   readonly ackSeq: number;
   /** Direction of the tile step in progress (absent / `none` while standing on a tile). */
   readonly walkDir?: Dir;
+  /** D27: last direction the client asked for; the player keeps walking that way until `none`. */
+  readonly heldDir: Dir;
+  /** Set when the player dies: owner of the bomb that started the flame (own id = suicide). */
+  readonly killedBy?: PlayerId;
+}
+
+/** A bomb on the board. `fuse` counts down to 0, then it explodes. */
+export interface Bomb {
+  readonly x: number;
+  readonly y: number;
+  readonly ownerId: PlayerId;
+  readonly fuse: number;
+}
+
+/**
+ * One burning tile. `ownerId` is who gets the credit: the owner of the first bomb of the
+ * chain (a chained bomb's flames carry the owner of the bomb that set it off).
+ */
+export interface Flame {
+  readonly x: number;
+  readonly y: number;
+  readonly ownerId: PlayerId;
+  /** Ticks left; the tile is removed when it reaches 0. */
+  readonly ttl: number;
+}
+
+/** An item lying on the floor. `droppedBy` = whose flame broke the box (not sent to clients). */
+export interface Item {
+  readonly x: number;
+  readonly y: number;
+  readonly kind: ItemKind;
+  readonly droppedBy: PlayerId;
 }
 
 export interface GameState {
@@ -36,6 +68,9 @@ export interface GameState {
   readonly grid: string;
   /** Sorted by player id. */
   readonly players: readonly PlayerSim[];
+  readonly bombs: readonly Bomb[];
+  readonly flames: readonly Flame[];
+  readonly items: readonly Item[];
 }
 
 export interface StepResult {

@@ -1,3 +1,5 @@
+import type { ItemKind } from '@booberman/protocol';
+
 /**
  * Every tunable number of the game rules lives here (CAR-3795: no balance
  * values scattered through the code). Ticks are 20Hz (50 ms).
@@ -19,6 +21,8 @@ export interface GameConfig {
   readonly bombRadius: number;
   /** Chance a destroyed box drops an item (0–1). */
   readonly itemDropChance: number;
+  /** Kind a destroyed box drops until CAR-3797 brings the real item table. */
+  readonly dropItemKind: ItemKind;
   /** Chance a free tile starts as a box (0–1). */
   readonly boxChance: number;
 }
@@ -34,6 +38,7 @@ export const GAME_CONFIG: GameConfig = {
   maxBombs: 2,
   bombRadius: 2,
   itemDropChance: 0.35,
+  dropItemKind: 'curse',
   boxChance: 0.72,
 };
 

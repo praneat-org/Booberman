@@ -135,16 +135,43 @@ describe('input queue (AC 5)', () => {
     const a = await join('inp2', 'A');
     input(a, 5, 'right');
     await a.next((m) => m.t === 'snapshot' && m.ackSeq === 5);
-    // wait until any step that input started has settled (a step may span several ticks,
-    // see BE-36), so x1 is a resting position and only a stale input could move it
+    // D27: the server keeps the held direction, so release (`none`) and wait until the step
+    // that input started has settled; only a stale input could move x1 after that
+    input(a, 6, 'none');
+    await a.next((m) => m.t === 'snapshot' && m.ackSeq === 6);
     await sleep(400);
     const x1 = snapshots(a).at(-1)?.players[0]?.x ?? 0;
     input(a, 5, 'right'); // duplicate
     input(a, 3, 'right'); // older
     await sleep(300);
-    for (const s of snapshots(a).slice(-3)) expect(s.ackSeq).toBe(5);
+    for (const s of snapshots(a).slice(-3)) expect(s.ackSeq).toBe(6);
     expect(snapshots(a).at(-1)?.players[0]?.x).toBe(x1);
-    expect((await roomState('inp2')).inputs).toMatchObject({ accepted: 1, stale: 2 });
+    expect((await roomState('inp2')).inputs).toMatchObject({ accepted: 2, stale: 2 });
+    a.close();
+  });
+
+  it('keeps walking the held direction with no further input, stops on none (D27)', async () => {
+    const a = await join('inp6', 'A');
+    await a.next((m) => m.t === 'snapshot'); // the first tick creates the game state
+    // open floor so the walk is not tied to the random board
+    await runInDurableObject(stubFor('inp6'), (room: RoomDO) => {
+      const r = room as unknown as { state?: { grid: string } };
+      if (!r.state) throw new Error('no state');
+      let grid = '';
+      for (let y = 0; y < 11; y++)
+        for (let x = 0; x < 13; x++) grid += x === 0 || y === 0 || x === 12 || y === 10 ? '#' : '.';
+      r.state.grid = grid;
+    });
+    input(a, 1, 'right'); // sent once
+    const far = await a.next((m) => m.t === 'snapshot' && (m.players[0]?.x ?? 0) >= 4);
+    expect(far.t === 'snapshot' && far.ackSeq).toBe(1);
+    input(a, 2, 'none');
+    await a.next((m) => m.t === 'snapshot' && m.ackSeq === 2);
+    await sleep(400);
+    const stopped = snapshots(a).at(-1)?.players[0]?.x ?? 0;
+    expect(Number.isInteger(stopped)).toBe(true);
+    await sleep(300);
+    expect(snapshots(a).at(-1)?.players[0]?.x).toBe(stopped);
     a.close();
   });
 

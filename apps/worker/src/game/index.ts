@@ -5,9 +5,12 @@ export { simulate } from './simulate';
 export { type SnapshotMessage, toSnapshot } from './snapshot';
 export { createInitialState } from './state';
 export type {
+  Bomb,
   Dir,
+  Flame,
   GameConfig,
   GameState,
+  Item,
   PlayerId,
   PlayerInput,
   PlayerSim,
