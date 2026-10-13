@@ -39,6 +39,12 @@ export default {
   fetch(request, env, ctx) {
     const room = ROOM_PATH.exec(new URL(request.url).pathname);
     if (room?.[1]) return roomSocket(request, env, decodeURIComponent(room[1]));
+    const { pathname } = new URL(request.url);
+    // `run_worker_first` (wrangler.jsonc) sends only /api/* and /ws/* here; anything else that reaches the
+    // Worker (e.g. a direct call) is a static asset / SPA fallback, never a JSON 404.
+    if (!pathname.startsWith('/api/') && !pathname.startsWith('/ws/')) {
+      return env.ASSETS.fetch(request);
+    }
     return api(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --port 8787",
+    "dev": "node -e \"require('node:fs').mkdirSync('../client/dist', { recursive: true })\" && wrangler dev --port 8787",
     "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.3.6",
+    "@booberman/client": "workspace:*",
     "@cloudflare/workers-types": "5.20261012.1",
     "wrangler": "4.149.0"
   }
