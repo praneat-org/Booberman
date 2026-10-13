@@ -1,5 +1,6 @@
 import type { GameEvent, PlayerId } from '@booberman/protocol';
 
+export type { GameConfig } from './config';
 export type { PlayerId };
 
 export type Dir = 'up' | 'down' | 'left' | 'right' | 'none';
@@ -21,6 +22,8 @@ export interface PlayerSim {
   readonly curse: number;
   /** Highest input seq applied so far. */
   readonly ackSeq: number;
+  /** Direction of the tile step in progress (absent / `none` while standing on a tile). */
+  readonly walkDir?: Dir;
 }
 
 export interface GameState {
@@ -33,11 +36,6 @@ export interface GameState {
   readonly grid: string;
   /** Sorted by player id. */
   readonly players: readonly PlayerSim[];
-}
-
-export interface GameConfig {
-  /** Tiles a player walks per tick (0.25 → 5 tiles/s at 20Hz; exact in binary floating point). */
-  readonly playerSpeed: number;
 }
 
 export interface StepResult {
