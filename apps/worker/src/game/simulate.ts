@@ -1,6 +1,10 @@
+import { GRID_WIDTH } from '@booberman/protocol';
 import { isWalkable } from './board';
+import { resolveExplosions } from './bombs';
 import { DEFAULT_CONFIG } from './config';
+import { VECTORS } from './dirs';
 import type {
+  Bomb,
   Dir,
   GameConfig,
   GameState,
@@ -12,13 +16,10 @@ import type {
 
 export { DEFAULT_CONFIG };
 
-const VECTORS: Record<Dir, readonly [dx: number, dy: number]> = {
-  up: [0, -1],
-  down: [0, 1],
-  left: [-1, 0],
-  right: [1, 0],
-  none: [0, 0],
-};
+const tileKey = (x: number, y: number) => y * GRID_WIDTH + x;
+
+/** The tile a (possibly mid-step) player counts as standing on: the nearest one. */
+const tileOf = (p: PlayerSim): readonly [number, number] => [Math.round(p.x), Math.round(p.y)];
 
 /** Tile the step in direction `dir` ends on, given where the player is now. */
 function stepTarget(x: number, y: number, dir: Dir): readonly [number, number] {
@@ -40,44 +41,107 @@ function advance(p: PlayerSim, dir: Dir, tx: number, ty: number, speed: number):
 
 /**
  * Players walk one tile at a time (`walkTicksPerTile` ticks per tile). A step
- * in progress always finishes; a new step starts from a tile centre and only
- * if the next tile is floor. Other players never block.
+ * in progress always finishes; a new step starts from a tile centre, in the
+ * direction the player is holding (D27), and only if the next tile is floor
+ * without a bomb. Leaving a bomb tile is always fine, entering one is not
+ * (so you can step off your own bomb but not back onto it). Other players never block.
  */
-function walk(p: PlayerSim, input: PlayerInput | undefined, grid: string, cfg: GameConfig) {
+function walk(p: PlayerSim, grid: string, bombTiles: ReadonlySet<number>, cfg: GameConfig) {
   const midStep = p.walkDir !== undefined && p.walkDir !== 'none';
   if (midStep) {
     const [tx, ty] = stepTarget(p.x, p.y, p.walkDir ?? 'none');
     return advance(p, p.walkDir ?? 'none', tx, ty, cfg.playerSpeed);
   }
-  if (!input || input.dir === 'none') return p;
-  const [dx, dy] = VECTORS[input.dir];
+  if (p.heldDir === 'none') return p;
+  const [dx, dy] = VECTORS[p.heldDir];
   const tx = p.x + dx;
   const ty = p.y + dy;
-  if (!isWalkable(grid, tx, ty)) return p;
-  return advance(p, input.dir, tx, ty, cfg.playerSpeed);
+  if (!isWalkable(grid, tx, ty) || bombTiles.has(tileKey(tx, ty))) return p;
+  return advance(p, p.heldDir, tx, ty, cfg.playerSpeed);
 }
 
-function step(p: PlayerSim, input: PlayerInput | undefined, grid: string, cfg: GameConfig) {
+function step(
+  p: PlayerSim,
+  input: PlayerInput | undefined,
+  grid: string,
+  bombTiles: ReadonlySet<number>,
+  cfg: GameConfig,
+): PlayerSim {
   const ackSeq = input ? Math.max(p.ackSeq, input.seq) : p.ackSeq;
   if (!p.alive) return { ...p, ackSeq };
-  return { ...walk(p, input, grid, cfg), ackSeq };
+  // D27: any input sets the held direction; no input keeps the old one.
+  const held = input ? { ...p, heldDir: input.dir } : p;
+  return { ...walk(held, grid, bombTiles, cfg), ackSeq };
+}
+
+/** Bombs dropped this tick: on the nearest tile, at most `maxBombs` per owner, one per tile. */
+function placeBombs(
+  players: readonly PlayerSim[],
+  inputs: ReadonlyMap<PlayerId, PlayerInput>,
+  bombs: readonly Bomb[],
+  cfg: GameConfig,
+): Bomb[] {
+  const out = [...bombs];
+  for (const p of players) {
+    if (!p.alive || !inputs.get(p.id)?.bomb) continue;
+    const [x, y] = tileOf(p);
+    const mine = out.filter((b) => b.ownerId === p.id).length;
+    if (mine >= cfg.maxBombs || out.some((b) => b.x === x && b.y === y)) continue;
+    out.push({ x, y, ownerId: p.id, fuse: cfg.bombFuseTicks });
+  }
+  return out;
+}
+
+/** Anyone on a burning tile dies; the credit goes to the owner of the first flame on that tile. */
+function applyDeaths(players: readonly PlayerSim[], flames: GameState['flames']): PlayerSim[] {
+  return players.map((p) => {
+    if (!p.alive) return p;
+    const [x, y] = tileOf(p);
+    const fire = flames.find((f) => f.x === x && f.y === y);
+    if (!fire) return p;
+    return { ...p, alive: false, heldDir: 'none', walkDir: 'none', killedBy: fire.ownerId };
+  });
 }
 
 /**
- * One 50 ms tick. Pure: never mutates `state` or `inputs`; the result does not
- * depend on Map iteration order (players are stepped in id order, state keeps them sorted).
+ * One 50 ms tick, in a fixed order: age bombs and flames -> walk -> place bombs ->
+ * explode due bombs and their chain (boxes break, items drop) -> deaths.
+ * Pure: never mutates `state` or `inputs`; the result does not depend on Map iteration
+ * order (players are stepped in id order, state keeps them sorted).
  */
 export function simulate(
   state: GameState,
   inputs: ReadonlyMap<PlayerId, PlayerInput>,
   cfg: GameConfig = DEFAULT_CONFIG,
 ): StepResult {
+  const bombTiles = new Set(state.bombs.map((b) => tileKey(b.x, b.y)));
+  // A bomb placed this tick keeps its full fuse: only bombs that already existed count down.
+  const counting = state.bombs.map((b) => ({ ...b, fuse: b.fuse - 1 }));
+  const burning = state.flames.map((f) => ({ ...f, ttl: f.ttl - 1 })).filter((f) => f.ttl > 0);
+
+  const walked = state.players.map((p) => step(p, inputs.get(p.id), state.grid, bombTiles, cfg));
+  const blast = resolveExplosions(
+    {
+      grid: state.grid,
+      bombs: placeBombs(walked, inputs, counting, cfg),
+      flames: burning,
+      items: state.items,
+      rngSeed: state.rngSeed,
+    },
+    cfg,
+  );
+
   return {
     state: {
       ...state,
       tick: state.tick + 1,
-      players: state.players.map((p) => step(p, inputs.get(p.id), state.grid, cfg)),
+      rngSeed: blast.rngSeed,
+      grid: blast.grid,
+      players: applyDeaths(walked, blast.flames),
+      bombs: blast.bombs,
+      flames: blast.flames,
+      items: blast.items,
     },
-    events: [],
+    events: blast.events,
   };
 }

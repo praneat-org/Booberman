@@ -144,6 +144,67 @@ describe('simulate: walking', () => {
   });
 });
 
+describe('simulate: held direction (D27)', () => {
+  const idle = (s: GameState, ticks: number): GameState => {
+    let cur = s;
+    for (let i = 0; i < ticks; i++) cur = simulate(cur, inputs({})).state;
+    return cur;
+  };
+
+  it('one right press keeps walking, with no further input, until the wall', () => {
+    const s = idle(simulate(openState(), inputs({ p1: input('right') })).state, 200);
+    expect(pos(s, 'p1')).toEqual({ x: GRID_WIDTH - 2, y: 1 });
+    expect(s.players[0]?.heldDir).toBe('right');
+  });
+
+  it('keeps going tile after tile at the normal pace (no pause between tiles)', () => {
+    const s0 = simulate(openState(), inputs({ p1: input('right') })).state;
+    const after = idle(s0, DEFAULT_CONFIG.walkTicksPerTile * 3 - 1);
+    expect(pos(after, 'p1')).toEqual({ x: 4, y: 1 });
+  });
+
+  it('none stops the player at the end of the step in progress', () => {
+    let s = simulate(openState(), inputs({ p1: input('right', 1) })).state;
+    s = idle(s, 1);
+    s = simulate(s, inputs({ p1: input('none', 2) })).state;
+    s = idle(s, 50);
+    expect(pos(s, 'p1')).toEqual({ x: 2, y: 1 });
+    expect(s.players[0]?.heldDir).toBe('none');
+  });
+
+  it('a new direction replaces the held one and is taken at the next tile', () => {
+    let s = simulate(openState(), inputs({ p1: input('right', 1) })).state;
+    s = simulate(s, inputs({ p1: input('down', 2) })).state;
+    s = idle(s, DEFAULT_CONFIG.walkTicksPerTile * 2 - 2); // 4 ticks right, then 4 ticks down
+    expect(pos(s, 'p1')).toEqual({ x: 2, y: 2 });
+  });
+
+  it('players hold their own directions independently', () => {
+    const s0 = openState(['p1', 'p2']);
+    let s = simulate(s0, inputs({ p1: input('right', 1), p2: input('left', 1) })).state;
+    s = idle(s, 200);
+    expect(pos(s, 'p1')).toEqual({ x: GRID_WIDTH - 2, y: 1 });
+    expect(pos(s, 'p2')).toEqual({ x: 1, y: 1 });
+  });
+
+  it('bomb is a one-time event: it is not repeated while the direction is held', () => {
+    const s0 = simulate(openState(), inputs({ p1: { dir: 'right', bomb: true, seq: 1 } })).state;
+    expect(s0.bombs).toHaveLength(1);
+    expect(idle(s0, 8).bombs).toHaveLength(1); // not one more per tile walked
+  });
+
+  it('is deterministic when replayed from the same inputs', () => {
+    const play = () => {
+      let s = openState();
+      s = simulate(s, inputs({ p1: input('right', 1) })).state;
+      s = idle(s, 30);
+      s = simulate(s, inputs({ p1: input('down', 2) })).state;
+      return idle(s, 30);
+    };
+    expect(play()).toEqual(play());
+  });
+});
+
 describe('simulate: purity', () => {
   it('does not mutate its arguments', () => {
     const s0 = createInitialState(9, ['p1', 'p2']);
@@ -200,6 +261,12 @@ describe('determinism', () => {
       return s !== undefined && (p.x !== s.x || p.y !== s.y);
     });
     expect(moved.length).toBeGreaterThan(0);
+  });
+
+  it('bombs actually go off in the run (the test covers explosions, boxes, deaths)', () => {
+    const { state, events } = run(123, 777);
+    expect(events.some((e) => (e as { kind: string }).kind === 'boxDestroyed')).toBe(true);
+    expect(state.players.some((p) => !p.alive) || state.flames.length > 0).toBe(true);
   });
 
   it('the PRNG state lives inside GameState and is seeded from the match seed', () => {
