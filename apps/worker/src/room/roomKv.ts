@@ -28,6 +28,8 @@ export class RoomKvSync {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private base: Pick<RoomKvMetadata, 'max' | 'createdAt'> | undefined;
+  /** One retry per failed write; reset after a write succeeds. */
+  private retried = false;
 
   constructor(
     private readonly kv: Kv,
@@ -72,6 +74,7 @@ export class RoomKvSync {
     if (target === undefined) return;
     this.running = true;
     this.lastWriteAt = this.now();
+    let again = false;
     try {
       if (target === 0) {
         await this.kv.delete(this.key);
@@ -82,18 +85,30 @@ export class RoomKvSync {
         this.base ??= await this.readBase();
         if (this.base === undefined) {
           this.counters.skipped++;
+        } else if (this.now() < this.base.createdAt + ROOM_KV_MIN_WRITE_INTERVAL_MS) {
+          // POST /api/rooms wrote this key moments ago (create-then-join is the normal flow): its put
+          // counts against KV's 1 write / s / key too, so wait out that window instead of hitting 429
+          this.lastWriteAt = this.base.createdAt;
+          again = true;
         } else {
           const metadata: RoomKvMetadata = { players: target, ...this.base };
           await this.kv.put(this.key, '', { metadata, expirationTtl: ROOM_KV_TTL_SECONDS });
           this.counters.puts++;
         }
       }
+      this.retried = false;
     } catch (error) {
       this.counters.errors++;
       console.error(JSON.stringify({ msg: 'room-kv-failed', key: this.key, error: String(error) }));
+      // retry once after the window so a transient failure (e.g. a 429) does not leave the lobby
+      // stale until the next heartbeat; a second failure in a row waits for join / leave / heartbeat
+      if (!this.retried) {
+        this.retried = true;
+        again = true;
+      }
     } finally {
       this.running = false;
-      if (this.desired !== target) this.schedule();
+      if (again || this.desired !== target) this.schedule();
     }
   }
 

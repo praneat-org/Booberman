@@ -263,6 +263,39 @@ describe('RoomKvSync (unit, fake KV + fake timers)', () => {
     errorLog.mockRestore();
   });
 
+  it('a key POST created < 1 s ago is not written again until its window has passed', async () => {
+    vi.useFakeTimers();
+    const { kv, puts } = fakeKv({ players: 0, max: 4, createdAt: Date.now() });
+    const sync = new RoomKvSync(kv, 'fresh');
+    sync.update(1); // join right after create
+    await settle(10);
+    expect(puts).toEqual([]);
+    await settle(ROOM_KV_MIN_WRITE_INTERVAL_MS);
+    expect(puts.map((p) => p.players)).toEqual([1]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a failed write is retried once after the window with the latest value; a second failure is not', async () => {
+    vi.useFakeTimers();
+    const { kv, puts, raw } = fakeKv();
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    raw.put.mockRejectedValueOnce(new Error('429'));
+    const sync = new RoomKvSync(kv, 'r1');
+    sync.update(3);
+    await settle();
+    expect(puts).toEqual([]);
+    await settle(ROOM_KV_MIN_WRITE_INTERVAL_MS);
+    expect(puts.map((p) => p.players)).toEqual([3]);
+
+    raw.put.mockRejectedValueOnce(new Error('429')).mockRejectedValueOnce(new Error('429'));
+    sync.update(2);
+    await settle(ROOM_KV_MIN_WRITE_INTERVAL_MS * 3);
+    expect(sync.counters.errors).toBe(3);
+    expect(puts.map((p) => p.players)).toEqual([3]);
+    expect(vi.getTimerCount()).toBe(0);
+    errorLog.mockRestore();
+  });
+
   it('heartbeat renews only after the renew interval; first call after a restart writes at once', async () => {
     vi.useFakeTimers();
     const { kv, puts } = fakeKv();
