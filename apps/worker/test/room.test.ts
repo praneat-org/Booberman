@@ -1,7 +1,8 @@
 import { runInDurableObject } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
-import { exampleGrid, GRID_HEIGHT, GRID_WIDTH } from '@booberman/protocol';
+import { GRID_HEIGHT, GRID_WIDTH } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
+import { createInitialState } from '../src/game';
 import type { RoomDO } from '../src/room/RoomDO';
 import { connect, isEvent, join, v } from './helpers';
 
@@ -33,7 +34,7 @@ describe('join / leave', () => {
     expect(welcome).toMatchObject({ v, t: 'welcome', playerId: 'p1' });
     if (welcome.t !== 'welcome') throw new Error('unreachable');
     expect(welcome.grid).toHaveLength(GRID_WIDTH * GRID_HEIGHT);
-    expect(welcome.grid).toBe(exampleGrid());
+    expect(welcome.grid).toBe(createInitialState(welcome.seed, ['p1']).grid);
     expect(Number.isInteger(welcome.seed)).toBe(true);
     a.close();
   });

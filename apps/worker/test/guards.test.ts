@@ -150,13 +150,25 @@ describe('hibernation (AC 6)', () => {
     await runInDurableObject(stub, (room: RoomDO) => {
       (room as unknown as { marker?: string }).marker = 'old instance';
     });
+    // BE-33: an armed tick interval keeps a DO from being evicted (that is the cost the loop
+    // must avoid on empty rooms), so disarm it by hand to simulate a restart / deploy
+    await runInDurableObject(stub, (room: RoomDO) => {
+      const r = room as unknown as { loop: ReturnType<typeof setInterval> | null };
+      if (r.loop !== null) clearInterval(r.loop);
+      r.loop = null;
+    });
     await evictDurableObject(stub);
 
     const after = await runInDurableObject(stub, (room: RoomDO) => ({
       fresh: (room as unknown as { marker?: string }).marker === undefined,
       players: room.players().map((p) => [p.playerId, p.nickname]),
+      ticking: room.isTicking(), // the constructor restarts the loop for the sockets still there
     }));
     expect(after.fresh).toBe(true);
+    expect(after.ticking).toBe(true);
+    const snapshotsBefore = a.received.filter((m) => m.t === 'snapshot').length;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(a.received.filter((m) => m.t === 'snapshot').length).toBeGreaterThan(snapshotsBefore);
     expect(after.players).toEqual([
       ['p1', 'มิ้นท์'],
       ['p2', 'บอส'],
