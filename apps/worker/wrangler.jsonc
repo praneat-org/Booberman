@@ -18,9 +18,16 @@
     "bindings": [{ "name": "ROOM", "class_name": "RoomDO" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }],
-  // PLACEHOLDER id (works for local dev / tests / dry-run). BE-19 creates the real KV namespace;
-  // BE-26 replaces the id and adds the per-env (dev / production) copies. Not a secret.
+  // Top level = local dev / tests (`wrangler dev`, vitest): PLACEHOLDER KV / D1 ids, never deployed.
+  // Real resources live in env.dev / env.production below (BE-26). No R2 binding yet (BE-37).
   "kv_namespaces": [{ "binding": "ROOMS", "id": "00000000000000000000000000000000" }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "booberman-local",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
   // POST /api/rooms: 5 creates / 60s / IP (the IP key is set in code). namespace_id = any unique int in the account.
   "ratelimits": [
     {
@@ -28,6 +35,55 @@
       "namespace_id": "1001",
       "simple": { "limit": 5, "period": 60 }
     }
-  ]
-  // env dev / production, KV, D1: added by later issues (BE-26, BE-42)
+  ],
+  // wrangler does NOT inherit these into an env: durable_objects, migrations, kv_namespaces, d1_databases,
+  // ratelimits (assets / observability / main / compatibility_date are inherited). Every env redeclares them,
+  // each with its own KV / D1 / Worker name, so dev can never touch production data. IDs are not secrets.
+  // Deploy: `wrangler deploy --env dev|production` (.github/workflows/deploy-*.yml). A DO is scoped to its
+  // Worker name, so dev and production each get their own RoomDO storage.
+  "env": {
+    "dev": {
+      "name": "booberman-dev",
+      "durable_objects": { "bindings": [{ "name": "ROOM", "class_name": "RoomDO" }] },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }],
+      "kv_namespaces": [{ "binding": "ROOMS", "id": "30dd839476fe4f608084eb5cb0b04de5" }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "booberman-dev",
+          "database_id": "dd924232-f337-4218-8489-8fe1473a0948",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "ratelimits": [
+        {
+          "name": "ROOM_CREATE_LIMITER",
+          "namespace_id": "1001",
+          "simple": { "limit": 5, "period": 60 }
+        }
+      ]
+    },
+    "production": {
+      // explicit: without it wrangler would name the Worker "booberman-production"
+      "name": "booberman",
+      "durable_objects": { "bindings": [{ "name": "ROOM", "class_name": "RoomDO" }] },
+      "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }],
+      "kv_namespaces": [{ "binding": "ROOMS", "id": "d1b8d5fe9723402eaf33adf28d68be80" }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "booberman",
+          "database_id": "c34396f8-b152-4297-813d-11a6c5d0dd7d",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "ratelimits": [
+        {
+          "name": "ROOM_CREATE_LIMITER",
+          "namespace_id": "1002",
+          "simple": { "limit": 5, "period": 60 }
+        }
+      ]
+    }
+  }
 }

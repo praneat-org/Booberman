@@ -1,0 +1,141 @@
+# Deploy env `production` on every push to main (BE-26 / CAR-3784). main only receives release/* and
+# hotfix/* merge commits (CONTRIBUTING.md), so a push to main = a release.
+#
+#   version  -> works out vX.Y.Z from the merge commit (before anything is touched)
+#   deploy   -> GitHub Environment `production` (required reviewers = the approval gate)
+#               build -> D1 migrations -> wrangler deploy  (separate steps, no `continue-on-error`:
+#               a failing migration never reaches deploy)
+#   tag      -> pushes vX.Y.Z on the deployed commit (only job with contents: write)
+name: deploy-prod
+
+on:
+  push:
+    branches:
+      - main
+
+# Never cancelled, never two at once: a production deploy / migration must not be killed half way or overlap.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_exists: ${{ steps.version.outputs.tag_exists }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # release/0.1.0 merge        -> v0.1.0 (version from the branch name in "Merge pull request #N from org/release/0.1.0")
+      # hotfix/... merge           -> latest v* tag with patch + 1
+      # anything else (direct push) -> fail BEFORE deploying: nothing to tag
+      - id: version
+        shell: bash
+        run: |
+          msg="$(git log -1 --pretty=%B "$GITHUB_SHA")"
+          if [[ "$msg" =~ from\ [^/[:space:]]+/release/([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            version="${BASH_REMATCH[1]}"
+          elif [[ "$msg" =~ from\ [^/[:space:]]+/hotfix/ ]]; then
+            latest="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+            if [ -z "$latest" ]; then echo "::error::hotfix merge but no vX.Y.Z tag exists yet"; exit 1; fi
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            version="$major.$minor.$((patch + 1))"
+          else
+            echo "::error::cannot tell the release version: HEAD of main is not a merge of release/<X.Y.Z> or hotfix/*"
+            exit 1
+          fi
+          tag_exists=false
+          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            if [ "$(git rev-list -n 1 "v$version")" != "$GITHUB_SHA" ]; then
+              echo "::error::tag v$version already exists on another commit"
+              exit 1
+            fi
+            tag_exists=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag_exists=$tag_exists" >> "$GITHUB_OUTPUT"
+          echo "production release: v$version" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: deploy production
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # GitHub Environment `production`: required reviewers (+ deploy from main only) = approval before this job runs
+    environment: production
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # builds apps/client first (apps/worker depends on it): wrangler.jsonc serves ../client/dist
+      - run: pnpm build
+
+      - name: Apply D1 migrations (production)
+        working-directory: apps/worker
+        run: pnpm exec wrangler d1 migrations apply DB --env production --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy Worker (production)
+        id: deploy
+        working-directory: apps/worker
+        shell: bash
+        run: |
+          pnpm exec wrangler deploy --env production 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          url="$(grep -Eo 'https://booberman\.[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | head -n 1 || true)"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Smoke test /api/health
+        shell: bash
+        run: |
+          if [ -z "$URL" ]; then echo "::error::could not find the workers.dev URL in the deploy output"; exit 1; fi
+          echo "production: $URL" >> "$GITHUB_STEP_SUMMARY"
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 --retry-all-errors "$URL/api/health"
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+
+  tag:
+    name: tag release
+    needs: [version, deploy]
+    if: needs.version.outputs.tag_exists != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Push tag
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/v$VERSION"
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
