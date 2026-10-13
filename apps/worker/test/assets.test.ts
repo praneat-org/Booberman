@@ -82,8 +82,10 @@ describe('wrangler.jsonc env dev / production', () => {
     const d1 = (e: {
       d1_databases: { binding: string; database_id: string; database_name: string }[];
     }) => e.d1_databases;
-    expect(kv(envs.dev)[0]?.binding).toBe('ROOMS');
-    expect(d1(envs.dev)[0]?.binding).toBe('DB');
+    for (const e of [envs.dev, envs.production]) {
+      expect(kv(e)[0]?.binding).toBe('ROOMS');
+      expect(d1(e)[0]?.binding).toBe('DB');
+    }
     expect(kv(envs.dev)[0]?.id).not.toBe(kv(envs.production)[0]?.id);
     expect(d1(envs.dev)[0]?.database_id).not.toBe(d1(envs.production)[0]?.database_id);
     expect(d1(envs.dev)[0]?.database_name).not.toBe(d1(envs.production)[0]?.database_name);
