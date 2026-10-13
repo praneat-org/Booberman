@@ -9,6 +9,7 @@ import {
 } from '@booberman/protocol';
 import { createInitialState, type GameState, simulate, toSnapshot } from '../game';
 import { InputQueue } from './inputQueue';
+import { RoomKvSync } from './roomKv';
 import { TickStats } from './tickStats';
 
 const v = PROTOCOL_VERSION;
@@ -44,13 +45,17 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   private state: GameState | undefined;
   private seedCache: number | undefined;
   private room = '';
+  /** Lobby entry in KV (display only, never read to decide anything). Created once the room id is known. */
+  private roomKv: RoomKvSync | undefined;
   private readonly queue = new InputQueue();
   private readonly stats = new TickStats();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
-      if (this.players().length === 0) return;
+      const first = this.players()[0];
+      if (!first) return;
+      this.room = attachmentOf(first.ws).room;
       this.seedCache = await this.seed();
       this.startLoop();
     });
@@ -154,6 +159,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     const seed = await this.seed();
     this.seedCache = seed;
     this.room = attachmentOf(ws).room;
+    this.kvSync()?.update(others.length + 1);
     // the board comes from the game state (seeded board once BE-36 lands), never a fixed sample
     const grid = this.state?.grid ?? createInitialState(seed, [playerId]).grid;
     send(ws, { v, t: 'welcome', playerId, seed, grid });
@@ -178,7 +184,21 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       };
     }
     this.broadcast({ v, t: 'event', kind: 'playerLeft', playerId: a.playerId }, ws);
-    if (this.players().length === 0) this.stopLoop();
+    this.room = a.room;
+    const remaining = this.players().length;
+    this.kvSync()?.update(remaining);
+    if (remaining === 0) this.stopLoop();
+  }
+
+  /** KV lobby sync for this room (fire-and-forget: never awaited, so it cannot slow a join or a tick). */
+  private kvSync(): RoomKvSync | undefined {
+    if (!this.roomKv && this.room) this.roomKv = new RoomKvSync(this.env.ROOMS, this.room);
+    return this.roomKv;
+  }
+
+  /** KV write counters for tests. */
+  roomKvStats() {
+    return { ...this.roomKv?.counters, pending: this.roomKv?.pending ?? false };
   }
 
   /** True while the 20Hz interval is armed (tests; an armed interval keeps the DO from hibernating). */
@@ -212,6 +232,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       this.stopLoop();
       return;
     }
+    this.kvSync()?.heartbeat(players.length);
     const started = performance.now();
     try {
       const { state, events } = simulate(this.syncPlayers(players), this.queue.drain());
