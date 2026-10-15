@@ -10,7 +10,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@booberman/protocol": "workspace:*"
+    "@booberman/protocol": "workspace:*",
+    "phaser": "3.90.0"
   },
   "devDependencies": {
     "vite": "8.3.4"
