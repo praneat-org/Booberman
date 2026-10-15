@@ -127,5 +127,6 @@ const arena = {
 for (const d of ['tiles', 'sprites', 'maps']) mkdirSync(join(root, d), { recursive: true });
 writeFileSync(join(root, 'tiles/tileset.png'), tileset);
 writeFileSync(join(root, 'sprites/player.png'), player);
-writeFileSync(join(root, 'maps/arena.json'), `${JSON.stringify(arena)}\n`);
+// pretty-printed; run `pnpm format` afterwards so biome wraps the tile data array
+writeFileSync(join(root, 'maps/arena.json'), `${JSON.stringify(arena, null, 2)}\n`);
 console.log('placeholder assets written to', root);
