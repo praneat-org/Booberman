@@ -1,8 +1,9 @@
-import { GRID_WIDTH } from '@booberman/protocol';
+import { type GameEvent, GRID_WIDTH, PROTOCOL_VERSION } from '@booberman/protocol';
 import { isWalkable } from './board';
 import { resolveExplosions } from './bombs';
 import { DEFAULT_CONFIG } from './config';
 import { VECTORS } from './dirs';
+import { checkRoundEnd } from './round';
 import type {
   Bomb,
   Dir,
@@ -105,7 +106,8 @@ function applyDeaths(players: readonly PlayerSim[], flames: GameState['flames'])
 
 /**
  * One 50 ms tick, in a fixed order: age bombs and flames -> walk -> place bombs ->
- * explode due bombs and their chain (boxes break, items drop) -> deaths.
+ * explode due bombs and their chain (boxes break, items drop) -> deaths -> round end
+ * (last survivor / all dead / time limit; D32 in the PR; elimination needs `contested`). After the end the state is frozen.
  * Pure: never mutates `state` or `inputs`; the result does not depend on Map iteration
  * order (players are stepped in id order, state keeps them sorted).
  */
@@ -114,6 +116,9 @@ export function simulate(
   inputs: ReadonlyMap<PlayerId, PlayerInput>,
   cfg: GameConfig = DEFAULT_CONFIG,
 ): StepResult {
+  // a finished round stays as it ended until the server starts a new one (`startRound`)
+  if (state.result) return { state: { ...state, tick: state.tick + 1 }, events: [] };
+
   const bombTiles = new Set(state.bombs.map((b) => tileKey(b.x, b.y)));
   // A bomb placed this tick keeps its full fuse: only bombs that already existed count down.
   const counting = state.bombs.map((b) => ({ ...b, fuse: b.fuse - 1 }));
@@ -131,17 +136,28 @@ export function simulate(
     cfg,
   );
 
+  const tick = state.tick + 1;
+  const players = applyDeaths(walked, blast.flames);
+  // sticky: judged on the players this tick started with, before anyone can leave again
+  const contested = state.contested || state.players.length >= 2;
+  const result = checkRoundEnd(players, tick, cfg, contested);
+  const events: GameEvent[] = result
+    ? [...blast.events, { v: PROTOCOL_VERSION, t: 'event', kind: 'roundEnd', ...result }]
+    : blast.events;
+
   return {
     state: {
       ...state,
-      tick: state.tick + 1,
+      tick,
+      contested,
       rngSeed: blast.rngSeed,
       grid: blast.grid,
-      players: applyDeaths(walked, blast.flames),
+      players,
       bombs: blast.bombs,
       flames: blast.flames,
       items: blast.items,
+      ...(result && { result }),
     },
-    events: blast.events,
+    events,
   };
 }

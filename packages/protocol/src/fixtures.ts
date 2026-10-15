@@ -82,6 +82,9 @@ export const exampleServerMessages = {
   playerLeft: { v, t: 'event', kind: 'playerLeft', playerId: 'p3' },
   boxDestroyed: { v, t: 'event', kind: 'boxDestroyed', x: 4, y: 3 },
   roundStart: { v, t: 'event', kind: 'roundStart', seed: 99, grid: exampleGrid() },
+  roundEndWin: { v, t: 'event', kind: 'roundEnd', winner: 'p2', reason: 'lastAlive' },
+  roundEndDraw: { v, t: 'event', kind: 'roundEnd', winner: null, reason: 'allDead' },
+  roundEndTimeout: { v, t: 'event', kind: 'roundEnd', winner: null, reason: 'timeout' },
   rematchStatus: {
     v,
     t: 'event',

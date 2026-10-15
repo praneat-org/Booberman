@@ -1,5 +1,6 @@
+import { PROTOCOL_VERSION } from '@booberman/protocol';
 import { createBoard, SPAWNS } from './board';
-import type { GameState, PlayerId, PlayerSim } from './types';
+import type { GameState, PlayerId, PlayerSim, StepResult } from './types';
 
 /**
  * New round. `seed` comes from the server (outside `game/`); the board is
@@ -20,8 +21,23 @@ export function createInitialState(seed: number, players: readonly PlayerId[]): 
     rngSeed,
     grid,
     players: sims,
+    contested: sims.length >= 2,
     bombs: [],
     flames: [],
     items: [],
+  };
+}
+
+/**
+ * Start a (new) round: the fresh state plus the `roundStart` event (D8) that tells clients to
+ * clear the board and redraw from `grid`. The server picks `seed` outside `game/` (no Math.random here).
+ */
+export function startRound(seed: number, players: readonly PlayerId[]): StepResult {
+  const state = createInitialState(seed, players);
+  return {
+    state,
+    events: [
+      { v: PROTOCOL_VERSION, t: 'event', kind: 'roundStart', seed: state.seed, grid: state.grid },
+    ],
   };
 }
