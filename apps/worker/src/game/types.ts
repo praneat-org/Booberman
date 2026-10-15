@@ -77,6 +77,13 @@ export interface GameState {
   readonly bombs: readonly Bomb[];
   readonly flames: readonly Flame[];
   readonly items: readonly Item[];
+  /**
+   * True once two or more players were in this round at the same time (sticky). Elimination
+   * ends the round only when contested, so a player who left mid-round still leaves the other
+   * as `lastAlive`, while someone playing alone from the start is not declared the winner.
+   * Lives in the state (not RoomDO) so replays stay deterministic.
+   */
+  readonly contested: boolean;
   /** Set once the round is over; `simulate` then stops changing anything but `tick`. */
   readonly result?: RoundResult;
 }

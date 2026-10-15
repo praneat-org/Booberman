@@ -21,6 +21,7 @@ export function createInitialState(seed: number, players: readonly PlayerId[]): 
     rngSeed,
     grid,
     players: sims,
+    contested: sims.length >= 2,
     bombs: [],
     flames: [],
     items: [],

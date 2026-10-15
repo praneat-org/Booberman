@@ -88,6 +88,80 @@ describe('win / draw', () => {
   });
 });
 
+/** What `RoomDO.leave()` does to the state: the player is gone at once, nothing else changes. */
+const leave = (s: GameState, id: PlayerId): GameState => ({
+  ...s,
+  players: s.players.filter((p) => p.id !== id),
+});
+
+describe('a player leaving mid-round (contested, D32 item 1)', () => {
+  it('1v1, both alive, one leaves: the other is the last survivor on the next tick', () => {
+    const { state } = simulate(board('#A...B.#'), none); // a tick with both in: contested
+    expect(state.contested).toBe(true);
+    expect(state.result).toBeUndefined();
+    const next = simulate(leave(state, 'p2'), none);
+    expect(roundEnds(next.events)).toEqual([
+      { v: 1, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' },
+    ]);
+    expect(next.state.result).toEqual({ winner: 'p1', reason: 'lastAlive' });
+  });
+
+  it('3 players, one already dead, a survivor leaves: the other survivor wins (same as 1v1)', () => {
+    const s = board('#A..B..C#');
+    const dead = {
+      ...s,
+      players: s.players.map((p) => (p.id === 'p3' ? { ...p, alive: false } : p)),
+    };
+    const { state } = simulate(dead, none);
+    expect(state.result).toBeUndefined();
+    const next = simulate(leave(state, 'p2'), none);
+    expect(next.state.result).toEqual({ winner: 'p1', reason: 'lastAlive' });
+  });
+
+  it('playing alone from the start never ends by elimination, only at the time limit', () => {
+    let s = board('#A.....#');
+    expect(s.contested).toBe(false);
+    for (let i = 0; i < 50; i++) s = simulate(s, none).state;
+    expect(s.contested).toBe(false);
+    expect(s.result).toBeUndefined();
+    const end = simulate({ ...s, tick: DEFAULT_CONFIG.roundTicks - 1 }, none);
+    expect(end.state.result).toEqual({ winner: null, reason: 'timeout' });
+  });
+
+  it('a 1v1 whose rival leaves right away (before any tick with both) is still a solo round', () => {
+    const s = leave(board('#A...B.#', { contested: false }), 'p2'); // flag only flips inside simulate
+    const { state } = simulate(s, none);
+    expect(state.result).toBeUndefined();
+  });
+
+  it('a rival joining a solo round makes it contested from the next tick, and it stays so', () => {
+    let s = board('#A.....#');
+    s = simulate(s, none).state;
+    const both = board('#A...B.#');
+    s = simulate({ ...s, players: both.players }, none).state;
+    expect(s.contested).toBe(true);
+    const next = simulate(leave(s, 'p2'), none);
+    expect(next.state.result).toEqual({ winner: 'p1', reason: 'lastAlive' });
+  });
+
+  it('startRound resets it: contested follows the number of players it starts with', () => {
+    expect(startRound(1, ['p1', 'p2']).state.contested).toBe(true);
+    expect(startRound(1, ['p1']).state.contested).toBe(false);
+    const ended = simulate(leave(simulate(board('#A...B.#'), none).state, 'p2'), none).state;
+    expect(startRound(2, ['p1']).state.contested).toBe(false);
+    expect(ended.contested).toBe(true);
+  });
+
+  it('is deterministic and does not mutate its input', () => {
+    const s = simulate(board('#A...B.#'), none).state;
+    const frozen = JSON.stringify(s);
+    const a = simulate(leave(s, 'p2'), none);
+    const b = simulate(leave(s, 'p2'), none);
+    expect(a).toEqual(b);
+    expect(JSON.stringify(s)).toBe(frozen);
+  });
+});
+
 describe('time limit', () => {
   const alive2 = (tick: number) => board('#A.....B#', { tick });
 

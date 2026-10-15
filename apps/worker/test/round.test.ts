@@ -84,6 +84,47 @@ describe('a 2-player room plays a round to the end (BE-39)', () => {
   });
 });
 
+describe('a player leaving mid-round through the real RoomDO (BE-39, D32 item 1)', () => {
+  it('1v1, both alive, p2 closes the socket: p1 gets roundEnd { p1, lastAlive } on the next tick', async () => {
+    const a = await join('leave1', 'A');
+    const b = await join('leave1', 'B');
+    await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
+    b.close();
+    const end = await a.next(roundEnd);
+    expect(end).toEqual({ v, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(a.received.filter(roundEnd)).toHaveLength(1);
+    a.close();
+  });
+
+  it('3 players, p3 already dead, p2 closes: p1 wins (same result as 1v1)', async () => {
+    const a = await join('leave3', 'A');
+    const b = await join('leave3', 'B');
+    const c = await join('leave3', 'C');
+    await c.next((m) => m.t === 'snapshot' && m.players.length === 3);
+    await editState('leave3', (s) => ({
+      players: s.players.map((p) => (p.id === 'p3' ? { ...p, alive: false } : p)),
+    }));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(a.received.filter(roundEnd)).toHaveLength(0);
+    b.close();
+    expect(await a.next(roundEnd)).toMatchObject({ winner: 'p1', reason: 'lastAlive' });
+    a.close();
+    c.close();
+  });
+
+  it('playing alone from the start: no roundEnd by elimination (and a second player leaving later does end it)', async () => {
+    const a = await join('leave4', 'A');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(a.received.filter(roundEnd)).toHaveLength(0);
+    const b = await join('leave4', 'B');
+    await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
+    b.close();
+    expect(await a.next(roundEnd)).toMatchObject({ winner: 'p1', reason: 'lastAlive' });
+    a.close();
+  });
+});
+
 describe('RoomDO.startRound(seed) (D8)', () => {
   it('broadcasts roundStart { seed, grid } and the next round is playable', async () => {
     const a = await join('round1x', 'A');

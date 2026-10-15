@@ -107,7 +107,7 @@ function applyDeaths(players: readonly PlayerSim[], flames: GameState['flames'])
 /**
  * One 50 ms tick, in a fixed order: age bombs and flames -> walk -> place bombs ->
  * explode due bombs and their chain (boxes break, items drop) -> deaths -> round end
- * (last survivor / all dead / time limit; D32 in the PR). After the end the state is frozen.
+ * (last survivor / all dead / time limit; D32 in the PR; elimination needs `contested`). After the end the state is frozen.
  * Pure: never mutates `state` or `inputs`; the result does not depend on Map iteration
  * order (players are stepped in id order, state keeps them sorted).
  */
@@ -138,7 +138,9 @@ export function simulate(
 
   const tick = state.tick + 1;
   const players = applyDeaths(walked, blast.flames);
-  const result = checkRoundEnd(players, tick, cfg);
+  // sticky: judged on the players this tick started with, before anyone can leave again
+  const contested = state.contested || state.players.length >= 2;
+  const result = checkRoundEnd(players, tick, cfg, contested);
   const events: GameEvent[] = result
     ? [...blast.events, { v: PROTOCOL_VERSION, t: 'event', kind: 'roundEnd', ...result }]
     : blast.events;
@@ -147,6 +149,7 @@ export function simulate(
     state: {
       ...state,
       tick,
+      contested,
       rngSeed: blast.rngSeed,
       grid: blast.grid,
       players,
