@@ -1,0 +1,50 @@
+{
+  "compressionlevel": -1,
+  "height": 11,
+  "width": 13,
+  "infinite": false,
+  "orientation": "orthogonal",
+  "renderorder": "right-down",
+  "tileheight": 16,
+  "tilewidth": 16,
+  "type": "map",
+  "version": "1.10",
+  "tiledversion": "1.10.2",
+  "nextlayerid": 2,
+  "nextobjectid": 1,
+  "tilesets": [
+    {
+      "firstgid": 1,
+      "name": "tileset",
+      "image": "tileset.png",
+      "imagewidth": 32,
+      "imageheight": 16,
+      "tilewidth": 16,
+      "tileheight": 16,
+      "tilecount": 2,
+      "columns": 2,
+      "margin": 0,
+      "spacing": 0
+    }
+  ],
+  "layers": [
+    {
+      "id": 1,
+      "name": "ground",
+      "type": "tilelayer",
+      "width": 13,
+      "height": 11,
+      "x": 0,
+      "y": 0,
+      "opacity": 1,
+      "visible": true,
+      "data": [
+        2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 1, 2, 1, 2,
+        1, 2, 1, 2, 1, 2, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1,
+        2, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 2, 1,
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 2, 1, 1, 1, 1, 1, 1,
+        1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2
+      ]
+    }
+  ]
+}
