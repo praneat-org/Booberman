@@ -4,6 +4,7 @@ import { DEFAULT_CONFIG, simulate } from './simulate';
 import { toSnapshot } from './snapshot';
 import { createInitialState } from './state';
 import type { Bomb, Dir, Flame, GameConfig, GameState, PlayerId, PlayerInput } from './types';
+import { DEPARTED } from './types';
 
 /**
  * Small boards from pictures: `#` wall, `x` box, `.` floor, `A`-`D` = p1-p4 standing on floor.
@@ -44,6 +45,7 @@ const bomb = (
   x,
   y,
   ownerId,
+  ownerSession: Number(ownerId.slice(1)),
   fuse,
 });
 /** Explodes on the very next tick. */
@@ -57,6 +59,7 @@ const flame = (
   x,
   y,
   ownerId,
+  ownerSession: Number(ownerId.slice(1)),
   ttl,
 });
 
@@ -324,7 +327,7 @@ describe('death', () => {
   });
 
   it('where two flames cross, the kill goes to the first flame on that tile', () => {
-    const s = board(['#.....C.#'], {
+    const s = board(['#A...BC.#'], {
       bombs: [due(1, 1, 'p1'), due(5, 1, 'p2')],
     });
     // tile 3 is reached by both; C (p3) stands at 6 (only p2 reaches)
@@ -392,5 +395,112 @@ describe('purity with bombs', () => {
     const frozen = structuredClone(s);
     simulate(s, ins({ p1: inp('right', true) }));
     expect(s).toEqual(frozen);
+  });
+});
+
+describe('bombs of a player who left (D33)', () => {
+  /** A bomb whose owner joined as p2 with session 2 and has since left. */
+  const stale = (x: number, y: number, fuse = DEFAULT_CONFIG.bombFuseTicks): Bomb => ({
+    ...bomb(x, y, 'p2', fuse),
+    ownerSession: 2,
+  });
+  /** The same board with p2 replaced by a newcomer in the slot (a new join = a new session). */
+  const rejoin = (s: GameState, id: PlayerId, session: number): GameState => ({
+    ...s,
+    players: s.players.map((p) => (p.id === id ? { ...p, session } : p)),
+  });
+
+  it('keeps going off on time, hurting people and breaking boxes', () => {
+    const s = rejoin(board(['#.B.x...#'], { bombs: [stale(3, 1, 1)] }), 'p2', 7);
+    const { state, events } = tick(s);
+    expect(state.bombs).toHaveLength(0);
+    expect(state.flames.length).toBeGreaterThan(0);
+    expect(events.map((e) => e.t === 'event' && e.kind)).toContain('boxDestroyed');
+  });
+
+  it('does not count against the newcomer: a full maxBombs can be placed at once', () => {
+    let s = rejoin(board(['#.B.....#'], { bombs: [stale(6, 1), stale(7, 1)] }), 'p2', 7);
+    s = tick(s, { p2: inp('right', true) }).state;
+    for (let i = 0; i < DEFAULT_CONFIG.walkTicksPerTile; i++) s = tick(s, {}).state;
+    s = tick(s, { p2: inp('none', true, 2) }).state;
+    expect(s.bombs.filter((b) => b.ownerSession === 7)).toHaveLength(DEFAULT_CONFIG.maxBombs);
+    expect(s.bombs).toHaveLength(DEFAULT_CONFIG.maxBombs + 2);
+    // ... and the cap still holds for the newcomer's own bombs
+    const capped = tick(s, { p2: inp('none', true, 3) }).state;
+    expect(capped.bombs).toHaveLength(s.bombs.length);
+  });
+
+  it('a kill from it is credited to nobody, not to the newcomer in the same slot', () => {
+    const s = rejoin(board(['#A.B..#'], { bombs: [stale(2, 1, 1)] }), 'p2', 7);
+    const { state } = tick(s);
+    expect(player(state, 'p1')).toMatchObject({ alive: false, killedBy: DEPARTED });
+    expect(player(state, 'p2')).toMatchObject({ alive: false, killedBy: DEPARTED });
+    expect(player(state, 'p2').killedBy).not.toBe('p2');
+  });
+
+  it('a chain started by a departed bomb counts for nobody, even where a living owner’s bomb is hit', () => {
+    // stale bomb at 1 sets off p3's bomb at 3, whose flames reach p1 standing at 5
+    const s = rejoin(board(['#.....#'], { bombs: [stale(1, 1, 1), bomb(3, 1, 'p3')] }), 'p2', 7);
+    const withP1 = { ...s, players: createInitialState(1, ['p1', 'p2', 'p3']).players };
+    const placed = {
+      ...withP1,
+      players: withP1.players.map((p) =>
+        p.id === 'p1'
+          ? { ...p, x: 5, y: 1 }
+          : p.id === 'p2'
+            ? { ...p, session: 7, x: 11, y: 1 }
+            : p,
+      ),
+    };
+    const { state } = tick(placed);
+    expect(state.flames.every((f) => f.ownerSession === 2)).toBe(true);
+    expect(player(state, 'p1')).toMatchObject({ alive: false, killedBy: DEPARTED });
+  });
+
+  it('a chain started by a living player that passes through a departed bomb still counts for them', () => {
+    const s = rejoin(
+      board(['#A.....D#'], { bombs: [due(1, 1, 'p1'), stale(3, 1), bomb(5, 1, 'p3')] }),
+      'p2',
+      7,
+    );
+    const { state } = tick(s);
+    expect(player(state, 'p4')).toMatchObject({ alive: false, killedBy: 'p1' });
+  });
+
+  it('suicide by a living player is unchanged', () => {
+    const { state } = tick(board(['#A..#'], { bombs: [due(1, 1, 'p1')] }));
+    expect(player(state, 'p1')).toMatchObject({ alive: false, killedBy: 'p1' });
+  });
+
+  it('replays exactly with players leaving and rejoining', () => {
+    const DIRS: Dir[] = ['up', 'down', 'left', 'right', 'none'];
+    const play = () => {
+      let state = createInitialState(9, ['p1', 'p2', 'p3']);
+      const events: unknown[] = [];
+      for (let t = 0; t < 400; t++) {
+        // p2 leaves at t=60 and is replaced at t=61 by a new join (session 10)
+        if (t === 60) state = { ...state, players: state.players.filter((p) => p.id !== 'p2') };
+        if (t === 61) {
+          const fresh = createInitialState(9, ['p2'], new Map([['p2', 10]])).players;
+          state = {
+            ...state,
+            players: [...state.players, ...fresh].sort((a, b) => a.id.localeCompare(b.id)),
+          };
+        }
+        const inputs = new Map<PlayerId, PlayerInput>();
+        for (const [i, id] of (['p1', 'p2', 'p3'] as const).entries()) {
+          inputs.set(id, {
+            dir: DIRS[(t * 7 + i * 3 + (t >> 3)) % DIRS.length] ?? 'none',
+            bomb: (t + i * 5) % 9 === 0,
+            seq: t + 1,
+          });
+        }
+        const res = simulate(state, inputs);
+        state = res.state;
+        events.push(...res.events);
+      }
+      return { state, events };
+    };
+    expect(play()).toEqual(play());
   });
 });

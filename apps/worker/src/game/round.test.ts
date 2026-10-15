@@ -29,7 +29,13 @@ function board(row: string, extra: Partial<GameState> = {}): GameState {
   return { ...base, grid, players, ...extra };
 }
 
-const due = (x: number, ownerId: PlayerId): Bomb => ({ x, y: 1, ownerId, fuse: 1 });
+const due = (x: number, ownerId: PlayerId): Bomb => ({
+  x,
+  y: 1,
+  ownerId,
+  ownerSession: Number(ownerId.slice(1)),
+  fuse: 1,
+});
 const none = new Map<PlayerId, PlayerInput>();
 const roundEnds = (events: { kind: string }[]) => events.filter((e) => e.kind === 'roundEnd');
 
