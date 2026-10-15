@@ -63,3 +63,49 @@ describe('wrangler.jsonc assets config', () => {
     });
   });
 });
+
+// BE-26: dev and production must never share a resource. wrangler does not inherit bindings into an env,
+// so each env redeclares them; this pins that nothing is shared, nothing is a placeholder and there is no R2.
+describe('wrangler.jsonc env dev / production', () => {
+  // biome-ignore lint/suspicious/noExplicitAny: test reads loose JSON
+  const config: any = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, ''));
+  const envs = { dev: config.env.dev, production: config.env.production };
+  const PLACEHOLDER = /^[0-]+$|^[0-]{8}-[0-]{4}-[0-]{4}-[0-]{4}-[0-]{12}$/;
+
+  it('names the Workers booberman-dev / booberman', () => {
+    expect(envs.dev.name).toBe('booberman-dev');
+    expect(envs.production.name).toBe('booberman');
+  });
+
+  it('gives each env its own real KV namespace and D1 database', () => {
+    const kv = (e: { kv_namespaces: { binding: string; id: string }[] }) => e.kv_namespaces;
+    const d1 = (e: {
+      d1_databases: { binding: string; database_id: string; database_name: string }[];
+    }) => e.d1_databases;
+    for (const e of [envs.dev, envs.production]) {
+      expect(kv(e)[0]?.binding).toBe('ROOMS');
+      expect(d1(e)[0]?.binding).toBe('DB');
+    }
+    expect(kv(envs.dev)[0]?.id).not.toBe(kv(envs.production)[0]?.id);
+    expect(d1(envs.dev)[0]?.database_id).not.toBe(d1(envs.production)[0]?.database_id);
+    expect(d1(envs.dev)[0]?.database_name).not.toBe(d1(envs.production)[0]?.database_name);
+    for (const e of [envs.dev, envs.production]) {
+      expect(kv(e)[0]?.id).not.toMatch(PLACEHOLDER);
+      expect(kv(e)[0]?.id).not.toBe(config.kv_namespaces[0].id);
+      expect(d1(e)[0]?.database_id).not.toMatch(PLACEHOLDER);
+    }
+  });
+
+  it('redeclares the Durable Object binding + migration tag and has no R2 (BE-37)', () => {
+    for (const e of [envs.dev, envs.production]) {
+      expect(e.durable_objects).toEqual(config.durable_objects);
+      expect(e.migrations).toEqual(config.migrations);
+      expect(e.ratelimits[0].name).toBe('ROOM_CREATE_LIMITER');
+      expect(e.r2_buckets).toBeUndefined();
+    }
+    expect(config.r2_buckets).toBeUndefined();
+    expect(envs.dev.ratelimits[0].namespace_id).not.toBe(
+      envs.production.ratelimits[0].namespace_id,
+    );
+  });
+});

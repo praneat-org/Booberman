@@ -11,6 +11,8 @@ declare namespace Cloudflare {
     ROOM: DurableObjectNamespace<import('./room/RoomDO').RoomDO>;
     /** KV: lobby room list only (never decides whether a room is full). */
     ROOMS: KVNamespace;
+    /** D1: round results (BE-42). Fire-and-forget writes only, never awaited in the game loop (D12). */
+    DB: D1Database;
     /** Rate limit for POST /api/rooms, keyed by client IP. */
     ROOM_CREATE_LIMITER: RateLimit;
   }
