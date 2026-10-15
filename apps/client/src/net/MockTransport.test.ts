@@ -138,10 +138,12 @@ describe('MockTransport', () => {
     const got = collect(t);
     for (let i = 0; i < 200; i++) t.step();
     const last = got.snaps.at(-1);
-    const moved = last?.players.filter((p) => p.id !== 'p1' && (p.x !== 0 || p.y !== 0)) ?? [];
-    expect(moved.length).toBeGreaterThan(0);
     const first = got.snaps[0]?.players ?? [];
-    expect(last?.players.some((p, i) => p.x !== first[i]?.x || p.y !== first[i]?.y)).toBe(true);
+    const moved =
+      last?.players.filter(
+        (p, i) => p.id !== 'p1' && (p.x !== first[i]?.x || p.y !== first[i]?.y),
+      ) ?? [];
+    expect(moved.length).toBeGreaterThan(0);
   });
 
   it('delays server messages by latency and answers ping with pong after a round trip', () => {
