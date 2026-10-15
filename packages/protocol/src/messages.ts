@@ -117,6 +117,19 @@ export const RoundStartEvent = z.object({
   seed: Seed,
   grid: Grid,
 });
+/**
+ * Why a round ended. `lastAlive` = one survivor (winner), `allDead` = everyone died on the same
+ * tick (draw), `timeout` = the round clock ran out (draw).
+ */
+export const RoundEndReason = z.enum(['lastAlive', 'allDead', 'timeout']);
+export type RoundEndReason = z.infer<typeof RoundEndReason>;
+/** BE-39: the round is over. `winner` is `null` for a draw (always present, never omitted). */
+export const RoundEndEvent = z.object({
+  ...event,
+  kind: z.literal('roundEnd'),
+  winner: PlayerId.nullable(),
+  reason: RoundEndReason,
+});
 /** D9: who is ready for a rematch and when the round starts anyway (epoch ms). */
 export const RematchStatusEvent = z.object({
   ...event,
@@ -136,12 +149,13 @@ export const PlayerLeftEvent = z.object({
   kind: z.literal('playerLeft'),
   playerId: PlayerId,
 });
-/** Add new kinds here (kill, roundEnd, …) in the issues that need them. */
+/** Add new kinds here (kill, …) in the issues that need them. */
 export const EventMessage = z.discriminatedUnion('kind', [
   PlayerJoinedEvent,
   PlayerLeftEvent,
   BoxDestroyedEvent,
   RoundStartEvent,
+  RoundEndEvent,
   RematchStatusEvent,
 ]);
 

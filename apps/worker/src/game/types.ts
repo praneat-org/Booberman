@@ -1,4 +1,4 @@
-import type { GameEvent, ItemKind, PlayerId } from '@booberman/protocol';
+import type { GameEvent, ItemKind, PlayerId, RoundEndReason } from '@booberman/protocol';
 
 export type { GameConfig } from './config';
 export type { PlayerId };
@@ -58,6 +58,12 @@ export interface Item {
   readonly droppedBy: PlayerId;
 }
 
+/** How a finished round ended; `winner` is `null` for a draw. Mirrors the `roundEnd` event. */
+export interface RoundResult {
+  readonly winner: PlayerId | null;
+  readonly reason: RoundEndReason;
+}
+
 export interface GameState {
   readonly tick: number;
   /** Match seed, as handed to `createInitialState` (also sent to clients). */
@@ -71,6 +77,8 @@ export interface GameState {
   readonly bombs: readonly Bomb[];
   readonly flames: readonly Flame[];
   readonly items: readonly Item[];
+  /** Set once the round is over; `simulate` then stops changing anything but `tick`. */
+  readonly result?: RoundResult;
 }
 
 export interface StepResult {

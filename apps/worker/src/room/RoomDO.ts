@@ -7,7 +7,13 @@ import {
   parseClientMessage,
   type ServerMessage,
 } from '@booberman/protocol';
-import { createInitialState, type GameState, simulate, toSnapshot } from '../game';
+import {
+  createInitialState,
+  type GameState,
+  startRound as newRound,
+  simulate,
+  toSnapshot,
+} from '../game';
 import { InputQueue } from './inputQueue';
 import { RoomKvSync } from './roomKv';
 import { TickStats } from './tickStats';
@@ -209,6 +215,30 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   /** Tick count and duration percentiles since the loop last started. */
   tickStats() {
     return { ...this.stats.summary(), inputs: { ...this.queue.counters } };
+  }
+
+  /**
+   * Start a new round with `seed` for everyone in the room: new board, everyone alive at their
+   * spawn, then `roundStart { seed, grid }` (D8) to all. The caller picks the seed
+   * (BE-41 calls this when the rematch is on; `game/` may not use `Math.random`).
+   * Does nothing in an empty room — nobody to play, and no loop must be armed for it.
+   */
+  async startRound(seed: number): Promise<void> {
+    if (this.players().length === 0) return;
+    seed >>>= 0; // same uint32 as `GameState.seed` / `welcome.seed`
+    // persist first (a hibernation restart rebuilds from this seed); the swap + broadcast below
+    // is one synchronous step, so no tick can send a snapshot of the new round before roundStart
+    await this.ctx.storage.put('seed', seed);
+    const players = this.players();
+    if (players.length === 0) return;
+    const { state, events } = newRound(
+      seed,
+      players.map((p) => p.playerId),
+    );
+    this.seedCache = state.seed;
+    this.state = state;
+    this.queue.clear();
+    for (const e of events) this.broadcast(e);
   }
 
   private startLoop(): void {

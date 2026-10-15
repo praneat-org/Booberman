@@ -109,6 +109,11 @@ describe('invalid messages', () => {
     expect(code({ ...exampleServerMessages.welcome, grid: '###' })).toBe('BAD_MESSAGE');
     expect(code({ ...exampleServerMessages.boxDestroyed, kind: 'meteor' })).toBe('BAD_MESSAGE');
     expect(code({ ...exampleServerMessages.error, code: 'OOPS' })).toBe('BAD_MESSAGE');
+    const end = exampleServerMessages.roundEndWin;
+    expect(code({ ...end, reason: 'rage-quit' })).toBe('BAD_MESSAGE');
+    expect(code({ ...end, winner: 'p9' })).toBe('BAD_MESSAGE');
+    const { winner: _w, ...noWinner } = end;
+    expect(code(noWinner)).toBe('BAD_MESSAGE'); // draw must say `winner: null`, not omit it
   });
 });
 
