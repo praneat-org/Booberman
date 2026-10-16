@@ -19,6 +19,10 @@ reviews:
       - "release/.*"
     # every push after a CodeRabbit round gets reviewed again (D14 loop)
     auto_incremental_review: true
+  pre_merge_checks:
+    # types + Decision log carry the "why"; forced JSDoc on every export only adds noise (D34 / BE-54)
+    docstrings:
+      mode: "off"
   path_filters:
     - "!pnpm-lock.yaml"
     - "!**/dist/**"
