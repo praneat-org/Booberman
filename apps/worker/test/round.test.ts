@@ -25,7 +25,7 @@ const editState = (room: string, edit: (s: GameState) => Partial<GameState>) =>
 
 /** p1 at (1,1), p2 at (11,1): a bomb of p1 at (10,1) burns x8..x12 → only p2 is in the fire. */
 const bombNextToP2: Partial<GameState> = {
-  bombs: [{ x: 10, y: 1, ownerId: 'p1', fuse: 1 }],
+  bombs: [{ x: 10, y: 1, ownerId: 'p1', ownerSession: 1, fuse: 1 }],
 };
 
 describe('a 2-player room plays a round to the end (BE-39)', () => {
@@ -145,7 +145,9 @@ describe('RoomDO.startRound(seed) (D8)', () => {
     expect(fresh.t === 'snapshot' && fresh.players).toHaveLength(2);
 
     // and it can end again
-    await editState('round1x', () => ({ bombs: [{ x: 2, y: 1, ownerId: 'p2', fuse: 1 }] }));
+    await editState('round1x', () => ({
+      bombs: [{ x: 2, y: 1, ownerId: 'p2', ownerSession: 2, fuse: 1 }],
+    }));
     // bomb at (2,1) burns x1..x4: p1 only (p2 stands at 11)
     const first = a.received.find(roundEnd);
     const second = await a.next((m) => roundEnd(m) && m !== first);
@@ -186,5 +188,37 @@ describe('RoomDO.startRound(seed) (D8)', () => {
     b.close();
     await new Promise((r) => setTimeout(r, 150));
     expect(await runInDurableObject(stubFor('round4x'), (r: RoomDO) => r.isTicking())).toBe(false);
+  });
+});
+
+describe('a bomb outlives its owner (BE-51 / D33)', () => {
+  const readState = (room: string) =>
+    runInDurableObject(stubFor(room), (r: RoomDO) => (r as unknown as { state?: GameState }).state);
+
+  it('a newcomer in the freed slot gets a new session and the old bomb is not theirs', async () => {
+    const a = await join('own1', 'A');
+    const b = await join('own1', 'B');
+    await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
+    const oldSession = (await readState('own1'))?.players.find((p) => p.id === 'p2')?.session;
+    expect(oldSession).toBeDefined();
+    await editState('own1', () => ({
+      bombs: [{ x: 6, y: 1, ownerId: 'p2', ownerSession: oldSession as number, fuse: 1000 }],
+    }));
+
+    b.close();
+    await a.next((m) => m.t === 'event' && m.kind === 'playerLeft');
+    const c = await join('own1', 'C');
+    expect(c.playerId).toBe('p2');
+    await c.next((m) => m.t === 'snapshot' && m.players.length === 2);
+
+    const state = await readState('own1');
+    const fresh = state?.players.find((p) => p.id === 'p2');
+    expect(fresh?.session).not.toBe(oldSession);
+    // the leaver's bomb is still on the board, owned by the old join
+    expect(state?.bombs).toEqual([
+      { x: 6, y: 1, ownerId: 'p2', ownerSession: oldSession, fuse: expect.any(Number) },
+    ]);
+    a.close();
+    c.close();
   });
 });

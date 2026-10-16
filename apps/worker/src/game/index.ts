@@ -18,3 +18,4 @@ export type {
   RoundResult,
   StepResult,
 } from './types';
+export { DEPARTED } from './types';

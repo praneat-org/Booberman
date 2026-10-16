@@ -4,6 +4,12 @@ import { FLAME_DIRS, VECTORS } from './dirs';
 import { nextRandom } from './prng';
 import type { Bomb, Flame, Item, PlayerId } from './types';
 
+/** Who gets the credit: the slot (for display) and the join it belongs to (D33). */
+interface Owner {
+  readonly id: PlayerId;
+  readonly session: number;
+}
+
 const tileKey = (x: number, y: number) => y * GRID_WIDTH + x;
 
 export interface BlastInput {
@@ -61,21 +67,22 @@ function reach(
  */
 export function resolveExplosions(input: BlastInput, cfg: GameConfig): BlastResult {
   const { grid, bombs, flames } = input;
-  const credit = new Map<number, PlayerId>(); // bomb index -> who gets the kill
+  const credit = new Map<number, Owner>(); // bomb index -> who gets the kill
   const queue: number[] = [];
-  const enqueue = (i: number, owner: PlayerId) => {
+  const enqueue = (i: number, owner: Owner) => {
     if (credit.has(i)) return;
     credit.set(i, owner);
     queue.push(i);
   };
 
-  const burning = new Map<number, PlayerId>();
+  const burning = new Map<number, Owner>();
   for (const f of flames) {
-    if (!burning.has(tileKey(f.x, f.y))) burning.set(tileKey(f.x, f.y), f.ownerId);
+    if (!burning.has(tileKey(f.x, f.y)))
+      burning.set(tileKey(f.x, f.y), { id: f.ownerId, session: f.ownerSession });
   }
   bombs.forEach((b, i) => {
     if (b.fuse <= 0) {
-      enqueue(i, b.ownerId);
+      enqueue(i, { id: b.ownerId, session: b.ownerSession });
       return;
     }
     const fire = burning.get(tileKey(b.x, b.y));
@@ -83,15 +90,15 @@ export function resolveExplosions(input: BlastInput, cfg: GameConfig): BlastResu
   });
 
   const newFlames: Flame[] = [];
-  const broken = new Map<number, PlayerId>(); // box tile -> who gets the drop
+  const broken = new Map<number, Owner>(); // box tile -> who gets the drop
   for (let head = 0; head < queue.length; head++) {
     const i = queue[head] as number;
     const bomb = bombs[i] as Bomb;
-    const owner = credit.get(i) as PlayerId;
+    const owner = credit.get(i) as Owner;
     const { cells, boxes } = reach(grid, bomb, cfg);
     for (const k of boxes) if (!broken.has(k)) broken.set(k, owner);
     for (const [x, y] of cells) {
-      newFlames.push({ x, y, ownerId: owner, ttl: cfg.flameTicks });
+      newFlames.push({ x, y, ownerId: owner.id, ownerSession: owner.session, ttl: cfg.flameTicks });
       bombs.forEach((other, j) => {
         if (other.x === x && other.y === y) enqueue(j, owner);
       });
@@ -111,7 +118,7 @@ export function resolveExplosions(input: BlastInput, cfg: GameConfig): BlastResu
     const [roll, next] = nextRandom(rngSeed);
     rngSeed = next;
     if (roll < cfg.itemDropChance) {
-      dropped.push({ x, y, kind: cfg.dropItemKind, droppedBy: broken.get(k) as PlayerId });
+      dropped.push({ x, y, kind: cfg.dropItemKind, droppedBy: (broken.get(k) as Owner).id });
     }
   }
 

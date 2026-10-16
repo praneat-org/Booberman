@@ -14,6 +14,7 @@ import type {
   PlayerSim,
   StepResult,
 } from './types';
+import { DEPARTED } from './types';
 
 export { DEFAULT_CONFIG };
 
@@ -86,21 +87,35 @@ function placeBombs(
   for (const p of players) {
     if (!p.alive || !inputs.get(p.id)?.bomb) continue;
     const [x, y] = tileOf(p);
-    const mine = out.filter((b) => b.ownerId === p.id).length;
+    const mine = out.filter((b) => b.ownerSession === p.session).length;
     if (mine >= cfg.maxBombs || out.some((b) => b.x === x && b.y === y)) continue;
-    out.push({ x, y, ownerId: p.id, fuse: cfg.bombFuseTicks });
+    out.push({ x, y, ownerId: p.id, ownerSession: p.session, fuse: cfg.bombFuseTicks });
   }
   return out;
 }
 
-/** Anyone on a burning tile dies; the credit goes to the owner of the first flame on that tile. */
+/**
+ * Anyone on a burning tile dies; the credit goes to the owner of the first flame on that tile.
+ * The owner is found by session among the players still in the room: if it is not there any
+ * more (left, possibly replaced in the same slot) nobody gets the kill (D33).
+ */
+function creditOf(players: readonly PlayerSim[], fire: GameState['flames'][number]) {
+  return players.find((q) => q.session === fire.ownerSession)?.id ?? DEPARTED;
+}
+
 function applyDeaths(players: readonly PlayerSim[], flames: GameState['flames']): PlayerSim[] {
   return players.map((p) => {
     if (!p.alive) return p;
     const [x, y] = tileOf(p);
     const fire = flames.find((f) => f.x === x && f.y === y);
     if (!fire) return p;
-    return { ...p, alive: false, heldDir: 'none', walkDir: 'none', killedBy: fire.ownerId };
+    return {
+      ...p,
+      alive: false,
+      heldDir: 'none',
+      walkDir: 'none',
+      killedBy: creditOf(players, fire),
+    };
   });
 }
 

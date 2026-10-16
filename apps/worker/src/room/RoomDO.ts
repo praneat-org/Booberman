@@ -24,9 +24,9 @@ const PLAYER_IDS = ['p1', 'p2', 'p3', 'p4'] as const satisfies readonly PlayerId
 /** Stored on each socket with serializeAttachment so it survives hibernation. */
 export type Attachment =
   | { joined: false; room: string }
-  | { joined: true; room: string; playerId: PlayerId; nickname: string };
+  | { joined: true; room: string; playerId: PlayerId; nickname: string; session: number };
 
-export type Player = { ws: WebSocket; playerId: PlayerId; nickname: string };
+export type Player = { ws: WebSocket; playerId: PlayerId; nickname: string; session: number };
 
 /** Close code sent with ROOM_FULL (4000-4999 is free for applications). */
 export const CLOSE_ROOM_FULL = 4001;
@@ -55,10 +55,13 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   private roomKv: RoomKvSync | undefined;
   private readonly queue = new InputQueue();
   private readonly stats = new TickStats();
+  /** D33: next join id. Persisted, so a session number is never handed out twice, even after an eviction. */
+  private nextSession = 1;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
+      this.nextSession = (await ctx.storage.get<number>('nextSession')) ?? 1;
       const first = this.players()[0];
       if (!first) return;
       this.room = attachmentOf(first.ws).room;
@@ -140,7 +143,8 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     const players: Player[] = [];
     for (const ws of this.ctx.getWebSockets()) {
       const a = attachmentOf(ws);
-      if (a.joined) players.push({ ws, playerId: a.playerId, nickname: a.nickname });
+      if (a.joined)
+        players.push({ ws, playerId: a.playerId, nickname: a.nickname, session: a.session });
     }
     return players.sort((x, y) => x.playerId.localeCompare(y.playerId));
   }
@@ -156,11 +160,15 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       return;
     }
 
+    // one id per join (D33), taken synchronously so two joins can never share it
+    const session = this.nextSession++;
+    void this.ctx.storage.put('nextSession', this.nextSession);
     ws.serializeAttachment({
       joined: true,
       room: attachmentOf(ws).room,
       playerId,
       nickname,
+      session,
     } satisfies Attachment);
     const seed = await this.seed();
     this.seedCache = seed;
@@ -234,6 +242,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     const { state, events } = newRound(
       seed,
       players.map((p) => p.playerId),
+      sessionsOf(players),
     );
     this.seedCache = state.seed;
     this.state = state;
@@ -280,15 +289,19 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   /** Game state follows the sockets: new first tick, a late joiner or a leaver all land here. */
   private syncPlayers(players: Player[]): GameState {
     const ids = players.map((p) => p.playerId);
+    const sessions = sessionsOf(players);
     const seed = this.seedCache ?? 0;
     const state = this.state;
-    if (!state) return createInitialState(seed, ids);
-    const known = new Set(state.players.map((p) => p.id));
-    if (ids.length === known.size && ids.every((id) => known.has(id))) return state;
-    const kept = state.players.filter((p) => ids.includes(p.id));
+    if (!state) return createInitialState(seed, ids, sessions);
+    // a slot only counts as "the same player" while the join is the same (D33)
+    const known = new Set(state.players.map((p) => `${p.id}:${p.session}`));
+    const wanted = players.map((p) => `${p.playerId}:${p.session}`);
+    if (wanted.length === known.size && wanted.every((k) => known.has(k))) return state;
+    const kept = state.players.filter((p) => sessions.get(p.id) === p.session);
+    const keptIds = new Set(kept.map((p) => p.id));
     const added = ids
-      .filter((id) => !known.has(id))
-      .flatMap((id) => createInitialState(seed, [id]).players);
+      .filter((id) => !keptIds.has(id))
+      .flatMap((id) => createInitialState(seed, [id], sessions).players);
     return { ...state, players: [...kept, ...added].sort((a, b) => a.id.localeCompare(b.id)) };
   }
 
@@ -314,6 +327,9 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     return seed;
   }
 }
+
+const sessionsOf = (players: readonly Player[]) =>
+  new Map(players.map((p) => [p.playerId, p.session] as const));
 
 export function attachmentOf(ws: WebSocket): Attachment {
   return (ws.deserializeAttachment() as Attachment | null) ?? { joined: false, room: '' };

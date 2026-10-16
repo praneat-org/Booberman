@@ -12,8 +12,16 @@ export interface PlayerInput {
   readonly seq: number;
 }
 
+/** `killedBy` value for a kill credited to a player who has since left the room (D33): counts for nobody. */
+export const DEPARTED = 'departed';
+
 export interface PlayerSim {
   readonly id: PlayerId;
+  /**
+   * D33: id of this player's join, never reused (a new player in the same slot gets a new one).
+   * Bombs are owned by session, so a leaver's bombs never count against whoever takes the slot.
+   */
+  readonly session: number;
   /** Tile units; fractional while walking between tiles. */
   readonly x: number;
   readonly y: number;
@@ -26,8 +34,11 @@ export interface PlayerSim {
   readonly walkDir?: Dir;
   /** D27: last direction the client asked for; the player keeps walking that way until `none`. */
   readonly heldDir: Dir;
-  /** Set when the player dies: owner of the bomb that started the flame (own id = suicide). */
-  readonly killedBy?: PlayerId;
+  /**
+   * Set when the player dies: owner of the bomb that started the flame (own id = suicide), or
+   * `DEPARTED` when that owner has left the room (D33: nobody gets the kill).
+   */
+  readonly killedBy?: PlayerId | typeof DEPARTED;
 }
 
 /** A bomb on the board. `fuse` counts down to 0, then it explodes. */
@@ -35,6 +46,8 @@ export interface Bomb {
   readonly x: number;
   readonly y: number;
   readonly ownerId: PlayerId;
+  /** `PlayerSim.session` of the owner (D33); `ownerId` alone is a slot and can be reused. */
+  readonly ownerSession: number;
   readonly fuse: number;
 }
 
@@ -46,6 +59,8 @@ export interface Flame {
   readonly x: number;
   readonly y: number;
   readonly ownerId: PlayerId;
+  /** Session of the credited owner (D33); resolved to a living player only when someone dies. */
+  readonly ownerSession: number;
   /** Ticks left; the tile is removed when it reaches 0. */
   readonly ttl: number;
 }
