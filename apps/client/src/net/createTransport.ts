@@ -1,4 +1,4 @@
-import { RoomId } from '@booberman/protocol';
+import { Nickname, RoomId } from '@booberman/protocol';
 import { MockTransport, type MockTransportOptions } from './MockTransport';
 import type { Transport } from './Transport';
 import { WsTransport } from './WsTransport';
@@ -41,7 +41,7 @@ export function joinFromSearch(
   const nick = params.get('nick')?.trim() ?? '';
   return {
     roomId: RoomId.safeParse(room).success ? room : DEFAULT_ROOM,
-    nickname: nick || `Player${Math.floor(random() * 90) + 10}`,
+    nickname: Nickname.safeParse(nick).success ? nick : `Player${Math.floor(random() * 90) + 10}`,
   };
 }
 

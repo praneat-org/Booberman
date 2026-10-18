@@ -47,6 +47,9 @@ describe('joinFromSearch', () => {
     expect(joinFromSearch('?room=x', () => 0)).toEqual({ roomId: 'devroom', nickname: 'Player10' });
     for (const bad of ['dev', 'a-b-c-d', 'toolongroomid1', '%20abcd'])
       expect(joinFromSearch(`?room=${bad}`).roomId).toBe('devroom');
+    for (const bad of ['a b', 'x'.repeat(13), '', '%F0%9F%98%80'])
+      expect(joinFromSearch(`?nick=${bad}`, () => 0).nickname).toBe('Player10');
+    expect(joinFromSearch('?nick=%E0%B8%9A%E0%B8%AD%E0%B8%AA').nickname).toBe('บอส');
     expect(RoomId.safeParse(joinFromSearch('').roomId).success).toBe(true);
     expect(joinFromSearch('', () => 0.99).nickname).toBe('Player99');
   });
