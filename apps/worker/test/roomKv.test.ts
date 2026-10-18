@@ -157,16 +157,21 @@ describe('RoomKvSync (unit, fake KV + fake timers)', () => {
   // The DOs of the integration tests above share this isolate's globals. Test code closes their sockets
   // and returns, so a DO may still process that close (leave -> RoomKvSync.update -> trailing setTimeout)
   // after `vi.useFakeTimers()` ran, and its timer would land in the fake clock and break
-  // `vi.getTimerCount()` below (BE-52). Start the fake-timer tests only once every such room is idle.
+  // `vi.getTimerCount()` below (BE-52). Start the fake-timer tests only once every such room has run
+  // its last `leave()`.
+  // `!isTicking()` alone is NOT a safe signal: once a close starts, the socket is already gone from
+  // `getWebSockets()`, so a tick can call `stopLoop()` before `leave()` has run. Every room here ends
+  // empty, and only `leave()` -> `update(0)` -> `flush()` deletes the key, so `deletes >= 1` means
+  // the last leave ran; `!pending` then waits out the delete and any trailing timer.
   beforeAll(async () => {
     for (const room of usedRooms) {
       await eventually(async () => {
-        const idle = await runInDurableObject(
-          stubFor(room),
-          (r: RoomDO) => !r.isTicking() && !r.roomKvStats().pending,
-        );
-        expect(idle).toBe(true);
-      });
+        const left = await runInDurableObject(stubFor(room), (r: RoomDO) => {
+          const stats = r.roomKvStats();
+          return (stats.deletes ?? 0) >= 1 && !stats.pending && !r.isTicking();
+        });
+        expect(left).toBe(true);
+      }, 10_000);
     }
   });
 
