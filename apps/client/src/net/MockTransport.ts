@@ -207,17 +207,18 @@ export class MockTransport implements Transport {
 
   send(input: TransportInput): void {
     const msg = { v: PROTOCOL_VERSION, t: 'input' as const, ...input };
-    // with latencyMs the message can land after a new round started; remember which round it was sent in
+    // with latencyMs the message can land after a new round started. A message sent in an earlier
+    // round is dropped whole (ackSeq, heldDir and bomb alike), so no field of it leaks into the new round.
     const sentInRound = this.round;
     this.afterDelay('in', () => {
       const me = this.players[0];
+      if (!me || sentInRound !== this.round) return;
       // like the server: ignore anything that is not newer than the last seq
-      if (!me || msg.seq <= this.ackSeq) return;
+      if (msg.seq <= this.ackSeq) return;
       this.ackSeq = msg.seq;
       me.heldDir = msg.dir;
       // a dead player cannot queue a bomb (it would otherwise fire at the respawn)
-      // ...and a bomb command from an earlier round must not fire at the new round's spawn
-      if (msg.bomb && me.alive && sentInRound === this.round) me.wantsBomb = true;
+      if (msg.bomb && me.alive) me.wantsBomb = true;
     });
   }
 

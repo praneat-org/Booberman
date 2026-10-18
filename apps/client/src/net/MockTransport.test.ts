@@ -297,6 +297,41 @@ describe('MockTransport bombs (FE-15)', () => {
     t.disconnect();
   });
 
+  it('drops a whole stale-round message (dir and seq too), not only its bomb (latency)', () => {
+    vi.useFakeTimers();
+    const t = new MockTransport({ bots: 0, latencyMs: 100, tickMs: 1_000_000 });
+    const { got } = drive(t, 0);
+    const flush = () => vi.advanceTimersByTime(100);
+    const me = () => got.snaps.at(-1)?.players[0];
+    const roundStarts = () =>
+      got.events.filter((e) => (e as { kind?: string }).kind === 'roundStart').length;
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    flush();
+    for (let i = 0; i < 60 && me()?.alive !== false; i++) {
+      t.step();
+      flush();
+    }
+    expect(me()?.alive).toBe(false);
+    t.send({ seq: 2, dir: 'right', bomb: false }); // sent in the old round, still in flight
+    for (let i = 0; i < 80 && roundStarts() === 0; i++) t.step();
+    t.step();
+    vi.advanceTimersByTime(100); // stale message lands after the restart
+    for (let i = 0; i < 8; i++) {
+      t.step();
+      flush();
+    }
+    expect(roundStarts()).toBe(1);
+    expect(me()).toMatchObject({ alive: true, x: 1, y: 1 }); // heldDir 'right' not applied
+    expect(got.snaps.at(-1)?.ackSeq).toBe(1); // seq 2 not acked
+    // a message from the new round is still accepted, even with the same seq number
+    t.send({ seq: 2, dir: 'right', bomb: false });
+    flush();
+    t.step();
+    flush();
+    expect(got.snaps.at(-1)?.ackSeq).toBe(2);
+    t.disconnect();
+  });
+
   it('starts a new round with roundStart some ticks after we died', () => {
     const t = new MockTransport({ bots: 1 });
     const { got } = drive(t, 0);
