@@ -8,6 +8,7 @@ import {
   tileAt,
 } from '@booberman/protocol';
 import type {
+  CloseInfo,
   InputDir,
   PongMessage,
   SnapshotMessage,
@@ -79,6 +80,7 @@ type Listeners = {
   event: Set<(m: GameEvent) => void>;
   pong: Set<(m: PongMessage) => void>;
   error: Set<(c: ErrorCode, m?: string) => void>;
+  close: Set<(i: CloseInfo) => void>;
 };
 
 /**
@@ -95,6 +97,7 @@ export class MockTransport implements Transport {
     event: new Set(),
     pong: new Set(),
     error: new Set(),
+    close: new Set(),
   };
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private readonly opts: Required<Omit<MockTransportOptions, 'clock'>>;
@@ -139,6 +142,11 @@ export class MockTransport implements Transport {
   }
   onError(cb: (code: ErrorCode, message?: string) => void): Unsubscribe {
     return this.subscribe(this.listeners.error, cb);
+  }
+
+  /** The mock never loses its "connection"; kept so scenes can subscribe the same way. */
+  onClose(cb: (info: CloseInfo) => void): Unsubscribe {
+    return this.subscribe(this.listeners.close, cb);
   }
 
   connect(): void {

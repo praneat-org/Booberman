@@ -1,6 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { createTransport, mockOptionsFromSearch, transportKind } from './createTransport';
+import { RoomId } from '@booberman/protocol';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createTransport,
+  joinFromSearch,
+  mockOptionsFromSearch,
+  transportKind,
+} from './createTransport';
 import { MockTransport } from './MockTransport';
+import { WsTransport } from './WsTransport';
 
 describe('transportKind', () => {
   it('?mock=1 selects the mock, everything else the real socket', () => {
@@ -31,9 +38,35 @@ describe('mockOptionsFromSearch', () => {
   });
 });
 
+describe('joinFromSearch', () => {
+  it('reads room + nick, falling back to a dev room and a random Player name', () => {
+    expect(joinFromSearch('?room=Abc123&nick=Mint')).toEqual({
+      roomId: 'abc123',
+      nickname: 'Mint',
+    });
+    expect(joinFromSearch('?room=x', () => 0)).toEqual({ roomId: 'devroom', nickname: 'Player10' });
+    for (const bad of ['dev', 'a-b-c-d', 'toolongroomid1', '%20abcd'])
+      expect(joinFromSearch(`?room=${bad}`).roomId).toBe('devroom');
+    for (const bad of ['a b', 'x'.repeat(13), '', '%F0%9F%98%80'])
+      expect(joinFromSearch(`?nick=${bad}`, () => 0).nickname).toBe('Player10');
+    expect(joinFromSearch('?nick=%E0%B8%9A%E0%B8%AD%E0%B8%AA').nickname).toBe('บอส');
+    expect(RoomId.safeParse(joinFromSearch('').roomId).success).toBe(true);
+    expect(joinFromSearch('', () => 0.99).nickname).toBe('Player99');
+  });
+});
+
 describe('createTransport', () => {
-  it('gives a MockTransport for ?mock=1 and null until WsTransport exists', () => {
+  it('gives MockTransport for ?mock=1 and WsTransport otherwise', () => {
+    vi.stubGlobal('WebSocket', class {});
     expect(createTransport('?mock=1')).toBeInstanceOf(MockTransport);
+    expect(createTransport('')).toBeInstanceOf(WsTransport);
+    expect(createTransport('?mock=0&room=abcd')).toBeInstanceOf(WsTransport);
+    vi.unstubAllGlobals();
+  });
+
+  it('is null without a WebSocket', () => {
+    vi.stubGlobal('WebSocket', undefined);
     expect(createTransport('')).toBeNull();
+    vi.unstubAllGlobals();
   });
 });
