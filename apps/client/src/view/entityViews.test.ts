@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  bombBlink,
-  FAST_BLINK_FUSE,
-  toBombViews,
-  toFlameViews,
-  toItemViews,
-} from './entityViews';
+import { bombBlink, FAST_BLINK_FUSE, toBombViews, toFlameViews, toItemViews } from './entityViews';
 import { TILE_SIZE } from './layout';
 
 describe('bombBlink', () => {

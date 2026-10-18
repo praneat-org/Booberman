@@ -2,6 +2,18 @@ import type { PlayerState } from '@booberman/protocol';
 
 export type Facing = 'down' | 'up' | 'left' | 'right';
 
+export const FACINGS: readonly Facing[] = ['down', 'up', 'left', 'right'];
+/** Frame in the player sheet when standing still (down, up, left, right). */
+export const IDLE_FRAME: Record<Facing, number> = { down: 0, up: 1, left: 2, right: 3 };
+/** First / last frame of each walk cycle in the player sheet. */
+export const WALK_FRAMES: Record<Facing, readonly [number, number]> = {
+  down: [4, 5],
+  up: [6, 7],
+  left: [8, 9],
+  right: [10, 11],
+};
+export const walkAnimKey = (facing: Facing): string => `walk-${facing}`;
+
 /** Cosmetic only: how long the death animation plays, in server ticks (0.4 s). */
 export const DEATH_TICKS = 8;
 

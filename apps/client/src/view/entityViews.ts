@@ -1,7 +1,7 @@
 import type { ItemKind } from '@booberman/protocol';
 import type { SnapshotMessage } from '../net/Transport';
-import { TILE_SIZE } from './layout';
 import { tileKey } from './boardView';
+import { TILE_SIZE } from './layout';
 
 /** CAR-3796: a fuse under 0.75 s (15 ticks at 20 Hz) makes the bomb blink faster. */
 export const FAST_BLINK_FUSE = 15;

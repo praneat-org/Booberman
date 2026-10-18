@@ -1,11 +1,21 @@
 import Phaser from 'phaser';
 import { failedRequiredAssets } from '../view/bootAssets';
 import { BOARD_HEIGHT_PX, BOARD_WIDTH_PX, loadingBarFill, TILE_SIZE } from '../view/layout';
+import { FACINGS, WALK_FRAMES, walkAnimKey } from '../view/playerAnim';
 import { AssetKey, SceneKey } from './keys';
 
 const BAR_WIDTH = 120;
 const BAR_HEIGHT = 8;
-const REQUIRED_ASSETS: readonly string[] = [AssetKey.Arena, AssetKey.Tiles, AssetKey.Player];
+const REQUIRED_ASSETS: readonly string[] = [
+  AssetKey.Arena,
+  AssetKey.Tiles,
+  AssetKey.Player,
+  AssetKey.Box,
+  AssetKey.Bomb,
+  AssetKey.Flame,
+  AssetKey.Items,
+  AssetKey.Marker,
+];
 
 export class BootScene extends Phaser.Scene {
   private failedKeys = new Set<string>();
@@ -44,15 +54,39 @@ export class BootScene extends Phaser.Scene {
       frameWidth: TILE_SIZE,
       frameHeight: TILE_SIZE,
     });
+    this.load.image(AssetKey.Box, 'sprites/box.png');
+    for (const key of [AssetKey.Bomb, AssetKey.Flame, AssetKey.Items]) {
+      this.load.spritesheet(key, `sprites/${key}.png`, {
+        frameWidth: TILE_SIZE,
+        frameHeight: TILE_SIZE,
+      });
+    }
+    this.load.image(AssetKey.Marker, 'sprites/marker.png');
   }
 
   create(): void {
+    this.createAnimations();
     const failed = failedRequiredAssets(this.failedKeys, REQUIRED_ASSETS);
     if (failed.length === 0) {
       this.scene.start(SceneKey.Lobby);
       return;
     }
     this.showLoadError(failed);
+  }
+
+  /** Walk cycles live in the player sheet (see `WALK_FRAMES`); created once, shared by every scene. */
+  private createAnimations(): void {
+    for (const facing of FACINGS) {
+      const key = walkAnimKey(facing);
+      if (this.anims.exists(key)) continue;
+      const [start, end] = WALK_FRAMES[facing];
+      this.anims.create({
+        key,
+        frames: this.anims.generateFrameNumbers(AssetKey.Player, { start, end }),
+        frameRate: 8,
+        repeat: -1,
+      });
+    }
   }
 
   /** Required asset missing: do not enter Lobby/Game; offer a retry (restart re-runs preload). */
