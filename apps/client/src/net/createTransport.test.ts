@@ -1,3 +1,4 @@
+import { RoomId } from '@booberman/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createTransport,
@@ -43,7 +44,10 @@ describe('joinFromSearch', () => {
       roomId: 'abc123',
       nickname: 'Mint',
     });
-    expect(joinFromSearch('?room=x', () => 0)).toEqual({ roomId: 'dev', nickname: 'Player10' });
+    expect(joinFromSearch('?room=x', () => 0)).toEqual({ roomId: 'devroom', nickname: 'Player10' });
+    for (const bad of ['dev', 'a-b-c-d', 'toolongroomid1', '%20abcd'])
+      expect(joinFromSearch(`?room=${bad}`).roomId).toBe('devroom');
+    expect(RoomId.safeParse(joinFromSearch('').roomId).success).toBe(true);
     expect(joinFromSearch('', () => 0.99).nickname).toBe('Player99');
   });
 });

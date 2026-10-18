@@ -28,7 +28,8 @@ export function mockOptionsFromSearch(search: string): MockTransportOptions {
   };
 }
 
-const DEFAULT_ROOM = 'dev';
+/** Must satisfy `RoomId` (4-12 chars a-z0-9, D16). */
+const DEFAULT_ROOM = 'devroom';
 
 /** Who joins which room. Until the lobby (FE-17 / FE-19) supplies it: `?room=abc123&nick=Mint`. */
 export function joinFromSearch(
