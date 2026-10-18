@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["https://booberman.miryn.workers.dev"],
+        "methods": ["GET", "HEAD"],
+        "headers": ["Range"]
+      },
+      "exposeHeaders": ["Content-Length", "Content-Type", "ETag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
