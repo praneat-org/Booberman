@@ -1,9 +1,11 @@
+import { RoomId } from '@booberman/protocol';
 import { MockTransport, type MockTransportOptions } from './MockTransport';
 import type { Transport } from './Transport';
+import { WsTransport } from './WsTransport';
 
 export type TransportKind = 'mock' | 'ws';
 
-/** `?mock=1` → MockTransport, anything else → the real WebSocket (FE-13). */
+/** `?mock=1` → MockTransport, anything else → the real WebSocket. */
 export function transportKind(search: string): TransportKind {
   return new URLSearchParams(search).get('mock') === '1' ? 'mock' : 'ws';
 }
@@ -26,8 +28,31 @@ export function mockOptionsFromSearch(search: string): MockTransportOptions {
   };
 }
 
-/** `null` = no transport available for this URL yet (WsTransport arrives in FE-13). */
-export function createTransport(search: string): Transport | null {
+const DEFAULT_ROOM = 'dev';
+
+/** Who joins which room. Until the lobby (FE-17 / FE-19) supplies it: `?room=abc123&nick=Mint`. */
+export function joinFromSearch(
+  search: string,
+  random: () => number = Math.random,
+): { roomId: string; nickname: string } {
+  const params = new URLSearchParams(search);
+  const room = params.get('room')?.toLowerCase() ?? '';
+  const nick = params.get('nick')?.trim() ?? '';
+  return {
+    roomId: RoomId.safeParse(room).success ? room : DEFAULT_ROOM,
+    nickname: nick || `Player${Math.floor(random() * 90) + 10}`,
+  };
+}
+
+/**
+ * `?mock=1` → MockTransport, otherwise WsTransport on `/ws/room/:id` (same origin).
+ * `null` only when the browser has no WebSocket.
+ */
+export function createTransport(
+  search: string,
+  join: { roomId: string; nickname: string } = joinFromSearch(search),
+): Transport | null {
   if (transportKind(search) === 'mock') return new MockTransport(mockOptionsFromSearch(search));
-  return null;
+  if (typeof WebSocket === 'undefined') return null;
+  return new WsTransport(join);
 }

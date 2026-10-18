@@ -11,9 +11,15 @@ export type TransportInput = Pick<InputMessage, 'seq' | 'dir' | 'bomb'>;
 
 export type Unsubscribe = () => void;
 
+/** The socket is gone. `ROOM_FULL` / `INVALID_NICKNAME` closes also arrive through `onError`. */
+export interface CloseInfo {
+  code: number;
+  reason: string;
+  clean: boolean;
+}
+
 /**
- * The only thing scenes know about the network. Implemented by MockTransport (`?mock=1`) and,
- * in FE-13, WsTransport. Every incoming message has already passed `parseServerMessage`.
+ * The only thing scenes know about the network. Implemented by MockTransport (`?mock=1`) and WsTransport. Every incoming message has already passed `parseServerMessage`.
  * Subscribe before `connect()`; each `on*` returns an unsubscribe function for scene shutdown.
  */
 export interface Transport {
@@ -27,4 +33,6 @@ export interface Transport {
   onEvent(cb: (msg: GameEvent) => void): Unsubscribe;
   onPong(cb: (msg: PongMessage) => void): Unsubscribe;
   onError(cb: (code: ErrorCode, message?: string) => void): Unsubscribe;
+  /** Connection ended by the server / network (never fired by our own `disconnect()`). */
+  onClose(cb: (info: CloseInfo) => void): Unsubscribe;
 }
