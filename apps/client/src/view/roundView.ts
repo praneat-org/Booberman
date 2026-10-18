@@ -2,6 +2,7 @@ import type { PlayerId } from '@booberman/protocol';
 import type { SnapshotMessage } from '../net/Transport';
 import { BoxField } from './boardView';
 import { toBombViews, toFlameViews, toItemViews } from './entityViews';
+import { Roster } from './hudView';
 import { type PlayerAnim, PlayerAnimTracker } from './playerAnim';
 import { type PlayerView, toPlayerViews } from './playerViews';
 
@@ -22,6 +23,8 @@ const EMPTY: Drawable = { bombs: [], flames: [], items: [], players: [] };
 export class RoundView {
   readonly boxes = new BoxField();
   readonly animTracker = new PlayerAnimTracker();
+  /** Nicknames for the HUD. Per connection, not per round: only `resetSession` clears it. */
+  readonly roster = new Roster();
   latest: SnapshotMessage | undefined;
   playerAnims: Map<string, PlayerAnim> = new Map();
 
@@ -30,6 +33,12 @@ export class RoundView {
     this.animTracker.reset();
     this.latest = undefined;
     this.playerAnims = new Map();
+  }
+
+  /** `welcome`: a new connection, so the roster starts empty too (joins are replayed after it). */
+  resetSession(grid?: string): void {
+    this.roster.clear();
+    this.reset(grid);
   }
 
   applySnapshot(msg: SnapshotMessage): void {
