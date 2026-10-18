@@ -2,7 +2,9 @@ import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
 import { createTransport } from '../net/createTransport';
 import type { Unsubscribe } from '../net/Transport';
+import { attachDebugOverlay } from '../ui/DebugOverlay';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
+import { debugEnabled } from '../view/debugStats';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
 import { BOARD_HEIGHT_PX, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
@@ -83,7 +85,7 @@ export class GameScene extends Phaser.Scene {
         applyWelcome(msg, this.round);
         this.destroyRoundSprites();
       }),
-      transport.onSnapshot((msg) => this.round.applySnapshot(msg)),
+      transport.onSnapshot((msg) => this.round.applySnapshot(msg, performance.now())),
       transport.onEvent((msg) => {
         if (applyBoardEvent(msg, this.round)) this.destroyRoundSprites();
       }),
@@ -91,6 +93,15 @@ export class GameScene extends Phaser.Scene {
     ];
     this.sender = new InputSender((input) => transport.send(input));
     cleanups.push(...this.bindKeyboard());
+    if (debugEnabled(window.location.search)) {
+      cleanups.push(
+        attachDebugOverlay(transport, () => ({
+          buffered: this.round.buffer.size,
+          latestTick: this.round.buffer.latestTick,
+          renderTick: this.round.renderTick,
+        })),
+      );
+    }
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       for (const off of cleanups) off();
@@ -112,6 +123,7 @@ export class GameScene extends Phaser.Scene {
   override update(): void {
     this.sender?.update(this.tracker.current(), this.bombPressed);
     this.bombPressed = false;
+    this.round.frame(performance.now());
     this.drawBoxes();
     const d = this.round.drawable(this.selfId);
     this.drawBombs(d.bombs);

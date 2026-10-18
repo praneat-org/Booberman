@@ -4,6 +4,7 @@ import { BoxField } from './boardView';
 import { toBombViews, toFlameViews, toItemViews } from './entityViews';
 import { type PlayerAnim, PlayerAnimTracker } from './playerAnim';
 import { type PlayerView, toPlayerViews } from './playerViews';
+import { DEFAULT_INTERPOLATION_DELAY_MS, SnapshotBuffer } from './snapshotBuffer';
 
 export interface Drawable {
   bombs: ReturnType<typeof toBombViews>;
@@ -22,19 +23,37 @@ const EMPTY: Drawable = { bombs: [], flames: [], items: [], players: [] };
 export class RoundView {
   readonly boxes = new BoxField();
   readonly animTracker = new PlayerAnimTracker();
+  readonly buffer: SnapshotBuffer;
+  /** What is being drawn: the buffered snapshot at the render time, players interpolated. */
   latest: SnapshotMessage | undefined;
   playerAnims: Map<string, PlayerAnim> = new Map();
+  renderTick: number | undefined;
+
+  constructor(delayMs: number = DEFAULT_INTERPOLATION_DELAY_MS) {
+    this.buffer = new SnapshotBuffer({ delayMs });
+  }
 
   reset(grid?: string): void {
     if (grid !== undefined) this.boxes.reset(grid);
     this.animTracker.reset();
+    this.buffer.reset();
     this.latest = undefined;
+    this.renderTick = undefined;
     this.playerAnims = new Map();
   }
 
-  applySnapshot(msg: SnapshotMessage): void {
-    this.latest = msg;
-    this.playerAnims = this.animTracker.update(msg.players, msg.tick);
+  /** `recvAt`: local clock (ms) when the snapshot arrived; same clock as `frame`. */
+  applySnapshot(msg: SnapshotMessage, recvAt: number): void {
+    this.buffer.push(msg, recvAt);
+  }
+
+  /** Once per rendered frame: move `latest` to the render time (nothing before the first snapshot). */
+  frame(now: number): void {
+    const sample = this.buffer.sample(now);
+    if (!sample) return;
+    this.latest = { ...sample.base, players: sample.players };
+    this.renderTick = sample.renderTick;
+    this.playerAnims = this.animTracker.update(sample.players, sample.renderTick);
   }
 
   /** What may be on screen right now: nothing until the first snapshot of the current round. */
