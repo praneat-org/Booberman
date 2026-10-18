@@ -4,11 +4,11 @@ import {
   cardRect,
   curseFrameVisible,
   curseSeconds,
+  fitText,
   formatRoundTime,
   ROUND_TICKS,
   Roster,
   toHudView,
-  truncateName,
 } from './hudView';
 
 const player = (id: PlayerState['id'], over: Partial<PlayerState> = {}): PlayerState => ({
@@ -41,15 +41,22 @@ describe('formatRoundTime', () => {
   });
 });
 
-describe('truncateName', () => {
-  it('keeps short names and cuts long ones', () => {
-    expect(truncateName('bob')).toBe('bob');
-    expect(truncateName('abcdefgh')).toBe('abcdefgh');
-    expect(truncateName('abcdefghi')).toBe('abcdefgh…');
+describe('fitText', () => {
+  // 5 px per UTF-16 unit; combining marks are zero width like a real font
+  const measure = (s: string) => [...s].filter((c) => !/[ัิ-ฺ็-๎]/u.test(c)).length * 5;
+  it('keeps text that fits', () => {
+    expect(fitText('bob', 40, measure)).toBe('bob');
+    expect(fitText('', 0, measure)).toBe('');
   });
-  it('does not count Thai combining marks and never splits them from the base letter', () => {
-    expect(truncateName('มิ้นท์')).toBe('มิ้นท์');
-    expect(truncateName('กิ้กิ้กิ้กิ้กิ้', 4)).toBe('กิ้กิ้กิ้กิ้…');
+  it('cuts to the width with an ellipsis', () => {
+    expect(fitText('abcdefghij', 30, measure)).toBe('abcde…');
+    expect(measure(fitText('abcdefghij', 30, measure))).toBeLessThanOrEqual(30);
+  });
+  it('never splits a Thai letter from its marks', () => {
+    expect(fitText('กิ้กิ้กิ้กิ้', 15, measure)).toBe('กิ้กิ้…');
+  });
+  it('returns empty when even the ellipsis does not fit', () => {
+    expect(fitText('abc', 4, measure)).toBe('');
   });
 });
 
@@ -94,7 +101,7 @@ describe('toHudView', () => {
     expect(v.time).toBe('2:28');
     expect(v.cards.map((c) => [c.id, c.name, c.status, c.curseSeconds, c.isSelf])).toEqual([
       ['p1', 'มิ้นท์', 'alive', 0, true],
-      ['p2', 'averyver…', 'cursed', 3, false],
+      ['p2', 'averyveryverylongname', 'cursed', 3, false],
       // dead beats cursed, and a dead player shows no curse timer; no nickname yet -> the id
       ['p3', 'p3', 'dead', 0, false],
     ]);

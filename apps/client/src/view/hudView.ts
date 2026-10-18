@@ -9,11 +9,8 @@ export const TICK_RATE = 20;
  * clock field yet, so the display counts down from this; the server alone ends the round.
  */
 export const ROUND_TICKS = 3000;
-/** Names longer than this (Thai combining marks excluded) are cut with an ellipsis. */
-export const HUD_NAME_MAX = 8;
 /** Curse frame blink: visible for 3 ticks, hidden for 3 ticks, phase taken from the server tick. */
 const CURSE_BLINK_TICKS = 3;
-const THAI_MARK = /[ัิ-ฺ็-๎]/u;
 
 /** Who is in the room, by nickname. Lives for one connection: cleared on `welcome`, not on `roundStart`. */
 export class Roster {
@@ -36,18 +33,32 @@ export class Roster {
   }
 }
 
-/** Cut to `max` visible characters; Thai combining marks ride on their base letter and do not count. */
-export function truncateName(name: string, max: number = HUD_NAME_MAX): string {
-  let visible = 0;
-  let out = '';
-  for (const ch of name) {
-    if (!THAI_MARK.test(ch)) {
-      if (visible === max) return `${out}…`;
-      visible++;
-    }
-    out += ch;
+const ELLIPSIS = '…';
+
+function graphemes(text: string): string[] {
+  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    return Array.from(new Intl.Segmenter().segment(text), (g) => g.segment);
   }
-  return out;
+  return Array.from(text);
+}
+
+/**
+ * Longest prefix of `text` (whole grapheme clusters, so Thai marks stay on their base letter) that
+ * fits `maxWidth` rendered px, with an ellipsis when something was cut. `measure` is the real text
+ * metric, so it holds for Thai, Latin and wide glyphs alike. Returns '' when not even the ellipsis fits.
+ */
+export function fitText(text: string, maxWidth: number, measure: (s: string) => number): string {
+  if (text === '' || measure(text) <= maxWidth) return text;
+  const g = graphemes(text);
+  let lo = 0;
+  let hi = g.length - 1; // the full text did not fit
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (measure(g.slice(0, mid).join('') + ELLIPSIS) <= maxWidth) lo = mid;
+    else hi = mid - 1;
+  }
+  const cut = g.slice(0, lo).join('') + ELLIPSIS;
+  return measure(cut) <= maxWidth ? cut : '';
 }
 
 /** Seconds left in the round as `m:ss`. Never negative; `--:--` before the first snapshot. */
@@ -73,7 +84,7 @@ export type PlayerStatus = 'alive' | 'cursed' | 'dead';
 
 export interface HudCard {
   id: PlayerId;
-  /** Nickname, or the id until `playerJoined` arrives. Already truncated for the card. */
+  /** Nickname, or the id until `playerJoined` arrives. Full text; the HUD fits it to the card width. */
   name: string;
   color: number;
   status: PlayerStatus;
@@ -100,7 +111,7 @@ export function toHudView(
       const secs = p.alive ? curseSeconds(p.curse) : 0;
       return {
         id: p.id,
-        name: truncateName(roster.nameOf(p.id) ?? p.id),
+        name: roster.nameOf(p.id) ?? p.id,
         color: PLAYER_TINTS[p.id] ?? 0xffffff,
         status: !p.alive ? 'dead' : secs > 0 ? 'cursed' : 'alive',
         curseSeconds: secs,
