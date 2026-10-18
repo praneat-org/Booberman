@@ -2,6 +2,7 @@ import {
   type ErrorCode,
   exampleGrid,
   type GameEvent,
+  GRID_WIDTH,
   type PlayerId,
   PROTOCOL_VERSION,
   parseServerMessage,
@@ -50,6 +51,15 @@ const DELTA: Record<Exclude<InputDir, 'none'>, readonly [number, number]> = {
   right: [1, 0],
 };
 const BOT_DIRS: readonly InputDir[] = ['up', 'down', 'left', 'right', 'none'];
+/** Mock bomb rules, same numbers as the real server (D29) so the picture matches. */
+const BOMB_FUSE_TICKS = 40;
+const FLAME_TICKS = 10;
+const FLAME_RANGE = 2;
+const MAX_BOMBS = 2;
+const ITEM_DROP_CHANCE = 0.35;
+/** After we die the mock waits this long, then starts a new round (like a rematch). */
+const RESTART_AFTER_DEAD_TICKS = 60;
+const BOT_BOMB_CHANCE = 0.04;
 
 /** mulberry32 — same family as the server's PRNG, so mock bots are reproducible. */
 export function createRng(seed: number): () => number {
@@ -72,6 +82,16 @@ interface MockPlayer {
   /** Direction of the step in progress. */
   walkDir?: Exclude<InputDir, 'none'>;
   bot?: () => number;
+  alive: boolean;
+  /** `bomb: true` is a one-shot (D27); consumed by the next tick. */
+  wantsBomb: boolean;
+}
+
+interface MockBomb {
+  x: number;
+  y: number;
+  fuse: number;
+  owner: PlayerId;
 }
 
 type Listeners = {
@@ -85,11 +105,18 @@ type Listeners = {
 
 /**
  * Fake server for `?mock=1`: `welcome` + player events, then a `snapshot` every tick (20 Hz).
- * Our player follows the held direction (D27); bots wander. No bombs / flames yet (FE-15).
+ * Our player follows the held direction (D27); bots wander. Bombs, flames, boxes breaking, item
+ * drops and deaths are faked here so the client can be drawn without the real rules.
  * Everything it emits is run through `parseServerMessage` like a real socket would be.
  */
 export class MockTransport implements Transport {
-  private readonly grid = exampleGrid();
+  private grid = exampleGrid();
+  private round = 0;
+  private bombs: MockBomb[] = [];
+  private flames = new Map<string, number>();
+  private items: { x: number; y: number; kind: 'curse' }[] = [];
+  private deadTicks = 0;
+  private readonly ruleRng: () => number;
   private readonly players: MockPlayer[];
   private readonly listeners: Listeners = {
     welcome: new Set(),
@@ -120,6 +147,7 @@ export class MockTransport implements Transport {
     };
     this.clock = options.clock ?? Date.now;
     this.jitterRng = createRng(this.opts.seed ^ 0x9e3779b9);
+    this.ruleRng = createRng(this.opts.seed ^ 0xb0b);
     this.players = [
       this.makePlayer(SELF_ID, this.opts.nickname),
       ...BOT_IDS.slice(0, this.opts.bots).map((id, i) =>
@@ -185,6 +213,7 @@ export class MockTransport implements Transport {
       if (!me || msg.seq <= this.ackSeq) return;
       this.ackSeq = msg.seq;
       me.heldDir = msg.dir;
+      if (msg.bomb) me.wantsBomb = true;
     });
   }
 
@@ -196,10 +225,16 @@ export class MockTransport implements Transport {
   step(): void {
     this.tick++;
     for (const p of this.players) {
-      if (p.bot && !p.walkDir)
+      if (!p.alive) continue;
+      if (p.bot && !p.walkDir) {
         p.heldDir = BOT_DIRS[Math.floor(p.bot() * BOT_DIRS.length)] ?? 'none';
+        if (this.ruleRng() < BOT_BOMB_CHANCE) p.wantsBomb = true;
+      }
       this.move(p);
+      if (p.wantsBomb) this.placeBomb(p);
+      p.wantsBomb = false;
     }
+    this.burn();
     this.toClient({
       v: PROTOCOL_VERSION,
       t: 'snapshot',
@@ -209,19 +244,114 @@ export class MockTransport implements Transport {
         id: p.id,
         x: p.x,
         y: p.y,
-        alive: true,
+        alive: p.alive,
         curse: 0,
         teleport: false,
       })),
-      bombs: [],
-      flames: [],
-      items: [],
+      bombs: this.bombs.map((b) => ({ x: b.x, y: b.y, fuse: b.fuse })),
+      flames: [...this.flames.keys()].map((k) => k.split(',').map(Number)),
+      items: this.items.map((i) => ({ ...i })),
+    });
+    this.maybeRestart();
+  }
+
+  private placeBomb(p: MockPlayer): void {
+    const x = Math.round(p.x);
+    const y = Math.round(p.y);
+    if (this.bombs.some((b) => b.x === x && b.y === y)) return;
+    if (this.bombs.filter((b) => b.owner === p.id).length >= MAX_BOMBS) return;
+    this.bombs.push({ x, y, fuse: BOMB_FUSE_TICKS, owner: p.id });
+  }
+
+  /** Count fuses down, explode (chain reaction), age flames, kill whoever stands in fire. */
+  private burn(): void {
+    for (const [key, ttl] of this.flames) {
+      if (ttl <= 1) this.flames.delete(key);
+      else this.flames.set(key, ttl - 1);
+    }
+    for (const b of this.bombs) b.fuse--;
+    for (;;) {
+      const next = this.bombs.find((b) => b.fuse <= 0);
+      if (!next) break;
+      this.bombs = this.bombs.filter((b) => b !== next);
+      this.explode(next);
+    }
+    for (const p of this.players) {
+      if (p.alive && this.flames.has(`${Math.round(p.x)},${Math.round(p.y)}`)) p.alive = false;
+    }
+  }
+
+  private explode(bomb: MockBomb): void {
+    this.flames.set(`${bomb.x},${bomb.y}`, FLAME_TICKS);
+    for (const [dx, dy] of Object.values(DELTA)) {
+      for (let i = 1; i <= FLAME_RANGE; i++) {
+        const x = bomb.x + dx * i;
+        const y = bomb.y + dy * i;
+        const tile = tileAt(this.grid, x, y);
+        if (tile === undefined || tile === '#') break;
+        this.flames.set(`${x},${y}`, FLAME_TICKS);
+        if (tile === 'x') {
+          this.breakBox(x, y);
+          break;
+        }
+        // other bombs in the fire go off in the same tick
+        for (const other of this.bombs) if (other.x === x && other.y === y) other.fuse = 0;
+      }
+    }
+    for (const other of this.bombs) {
+      if (this.flames.has(`${other.x},${other.y}`)) other.fuse = 0;
+    }
+  }
+
+  private breakBox(x: number, y: number): void {
+    const i = y * GRID_WIDTH + x;
+    this.grid = `${this.grid.slice(0, i)}.${this.grid.slice(i + 1)}`;
+    this.toClient({ v: PROTOCOL_VERSION, t: 'event', kind: 'boxDestroyed', x, y });
+    if (this.ruleRng() < ITEM_DROP_CHANCE) this.items.push({ x, y, kind: 'curse' });
+  }
+
+  /** Everybody (or just we) dead for a while → new round, like a rematch. */
+  private maybeRestart(): void {
+    const me = this.players[0];
+    this.deadTicks = me && !me.alive ? this.deadTicks + 1 : 0;
+    if (this.deadTicks < RESTART_AFTER_DEAD_TICKS) return;
+    this.deadTicks = 0;
+    this.round++;
+    this.grid = exampleGrid();
+    this.bombs = [];
+    this.flames.clear();
+    this.items = [];
+    for (const p of this.players) {
+      const spawn = SPAWNS[p.id] ?? { x: 1, y: 1 };
+      Object.assign(p, {
+        x: spawn.x,
+        y: spawn.y,
+        alive: true,
+        walkDir: undefined,
+        heldDir: 'none',
+      });
+    }
+    this.toClient({
+      v: PROTOCOL_VERSION,
+      t: 'event',
+      kind: 'roundStart',
+      seed: this.opts.seed + this.round,
+      grid: this.grid,
     });
   }
 
   private makePlayer(id: PlayerId, nickname: string, bot?: () => number): MockPlayer {
     const spawn = SPAWNS[id] ?? { x: 1, y: 1 };
-    return { id, nickname, x: spawn.x, y: spawn.y, heldDir: 'none', bot };
+    return {
+      id,
+      nickname,
+      x: spawn.x,
+      y: spawn.y,
+      heldDir: 'none',
+      bot,
+      alive: true,
+      wantsBomb: false,
+    };
   }
 
   private move(p: MockPlayer): void {

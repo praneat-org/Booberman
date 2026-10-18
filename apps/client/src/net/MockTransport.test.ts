@@ -192,3 +192,65 @@ describe('MockTransport', () => {
     expect(got.welcome[0]).toMatchObject({ v: PROTOCOL_VERSION, t: 'welcome', playerId: 'p1' });
   });
 });
+
+describe('MockTransport bombs (FE-15)', () => {
+  function drive(t: MockTransport, ticks: number) {
+    const got = collect(t);
+    t.connect();
+    return {
+      got,
+      run: () => {
+        for (let i = 0; i < ticks; i++) t.step();
+      },
+    };
+  }
+
+  it('our bomb counts down, explodes into flames, breaks a box and kills us if we stay', () => {
+    const t = new MockTransport({ bots: 1, seed: 7 });
+    const { got } = drive(t, 0);
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    t.step();
+    expect(got.snaps.at(-1)?.bombs).toEqual([{ x: 1, y: 1, fuse: 39 }]);
+    for (let i = 0; i < 39; i++) t.step();
+    const last = got.snaps.at(-1);
+    expect(last?.bombs).toEqual([]);
+    expect(last?.flames.length).toBeGreaterThan(0);
+    expect(last?.flames).toContainEqual([1, 1]);
+    expect(last?.players[0]?.alive).toBe(false);
+    expect(got.events.some((e) => (e as { kind?: string }).kind === 'boxDestroyed')).toBe(true);
+    t.disconnect();
+  });
+
+  it('caps at 2 bombs per player and never stacks two on one tile', () => {
+    const t = new MockTransport({ bots: 1 });
+    const { got } = drive(t, 0);
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    t.step();
+    t.send({ seq: 2, dir: 'none', bomb: true });
+    t.step();
+    expect(got.snaps.at(-1)?.bombs).toHaveLength(1);
+    t.disconnect();
+  });
+
+  it('starts a new round with roundStart some ticks after we died', () => {
+    const t = new MockTransport({ bots: 1 });
+    const { got } = drive(t, 0);
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    for (let i = 0; i < 40 + 61; i++) t.step();
+    const kinds = got.events.map((e) => (e as { kind?: string }).kind);
+    expect(kinds).toContain('roundStart');
+    expect(got.snaps.at(-1)?.players[0]).toMatchObject({ alive: true, x: 1, y: 1 });
+    expect(got.snaps.at(-1)?.bombs).toEqual([]);
+    t.disconnect();
+  });
+
+  it('everything it emits still passes parseServerMessage', () => {
+    const t = new MockTransport({ bots: 3, seed: 3 });
+    const { got, run } = drive(t, 400);
+    run();
+    for (const msg of got.raw) {
+      expect(parseServerMessage(JSON.parse(JSON.stringify(msg))).ok).toBe(true);
+    }
+    t.disconnect();
+  });
+});
