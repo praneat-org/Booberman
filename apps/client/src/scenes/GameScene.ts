@@ -2,6 +2,7 @@ import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
 import { createTransport } from '../net/createTransport';
 import type { SnapshotMessage, Unsubscribe } from '../net/Transport';
+import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
 import { BoxField } from '../view/boardView';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
 import { toBombViews, toFlameViews, toItemViews } from '../view/entityViews';
@@ -86,15 +87,14 @@ export class GameScene extends Phaser.Scene {
     const cleanups: Unsubscribe[] = [
       transport.onWelcome((msg) => {
         this.selfId = msg.playerId;
-        this.boxes.reset(msg.grid);
+        applyWelcome(msg, this.boxes, this.animTracker);
       }),
       transport.onSnapshot((msg) => {
         this.latest = msg;
         this.playerAnims = this.animTracker.update(msg.players, msg.tick);
       }),
       transport.onEvent((msg) => {
-        if (msg.kind === 'boxDestroyed') this.boxes.destroy(msg.x, msg.y);
-        else if (msg.kind === 'roundStart') this.boxes.reset(msg.grid);
+        applyBoardEvent(msg, this.boxes, this.animTracker);
       }),
       transport.onError((code, message) => console.warn('[transport] error', code, message)),
     ];
