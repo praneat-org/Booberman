@@ -213,7 +213,8 @@ export class MockTransport implements Transport {
       if (!me || msg.seq <= this.ackSeq) return;
       this.ackSeq = msg.seq;
       me.heldDir = msg.dir;
-      if (msg.bomb) me.wantsBomb = true;
+      // a dead player cannot queue a bomb (it would otherwise fire at the respawn)
+      if (msg.bomb && me.alive) me.wantsBomb = true;
     });
   }
 
@@ -329,6 +330,7 @@ export class MockTransport implements Transport {
         alive: true,
         walkDir: undefined,
         heldDir: 'none',
+        wantsBomb: false,
       });
     }
     this.toClient({

@@ -167,6 +167,7 @@ export class GameScene extends Phaser.Scene {
     this.sync(this.itemSprites, views, (v) =>
       this.add.sprite(v.px, v.py, AssetKey.Items, v.frame).setOrigin(0, 0).setDepth(Depth.Item),
     );
+    for (const v of views) this.itemSprites.get(v.key)?.setFrame(v.frame);
   }
 
   private drawPlayers(snapshot: SnapshotMessage): void {

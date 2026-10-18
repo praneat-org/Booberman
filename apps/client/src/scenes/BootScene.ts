@@ -65,9 +65,10 @@ export class BootScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.createAnimations();
     const failed = failedRequiredAssets(this.failedKeys, REQUIRED_ASSETS);
     if (failed.length === 0) {
+      // only after every required sheet loaded: an anim made from a failed sheet has no frames and `exists` would block a later retry
+      this.createAnimations();
       this.scene.start(SceneKey.Lobby);
       return;
     }

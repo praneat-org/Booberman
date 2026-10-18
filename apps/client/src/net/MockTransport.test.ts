@@ -221,14 +221,51 @@ describe('MockTransport bombs (FE-15)', () => {
     t.disconnect();
   });
 
-  it('caps at 2 bombs per player and never stacks two on one tile', () => {
-    const t = new MockTransport({ bots: 1 });
+  it('caps at 2 bombs per player, on different tiles, and never stacks two on one tile', () => {
+    const t = new MockTransport({ bots: 0 });
+    const { got } = drive(t, 0);
+    let seq = 0;
+    // free tiles around the spawn corner: (1,1), (2,1), (1,2); everything else is a wall or a box
+    const walkTo = (dir: 'left' | 'right' | 'down', tx: number, ty: number) => {
+      t.send({ seq: ++seq, dir, bomb: false });
+      for (let i = 0; i < 30; i++) {
+        t.step();
+        const me = got.snaps.at(-1)?.players[0];
+        if (me && Math.abs(me.x - tx) < 0.01 && Math.abs(me.y - ty) < 0.01) break;
+      }
+      t.send({ seq: ++seq, dir: 'none', bomb: false });
+      t.step();
+    };
+    const bombHere = () => {
+      t.send({ seq: ++seq, dir: 'none', bomb: true });
+      t.step();
+    };
+    bombHere();
+    bombHere(); // same tile again: rejected as stacked
+    expect(got.snaps.at(-1)?.bombs).toHaveLength(1);
+    walkTo('right', 2, 1);
+    bombHere();
+    expect(got.snaps.at(-1)?.bombs).toHaveLength(2);
+    walkTo('left', 1, 1);
+    walkTo('down', 1, 2);
+    expect(got.snaps.at(-1)?.players[0]).toMatchObject({ x: 1, y: 2 });
+    bombHere(); // third distinct tile: only MAX_BOMBS rejects this
+    const bombs = got.snaps.at(-1)?.bombs ?? [];
+    expect(bombs).toHaveLength(2);
+    expect(new Set(bombs.map((b) => `${b.x},${b.y}`)).size).toBe(2);
+    t.disconnect();
+  });
+
+  it('drops a bomb command sent while dead instead of firing it after respawn', () => {
+    const t = new MockTransport({ bots: 0 });
     const { got } = drive(t, 0);
     t.send({ seq: 1, dir: 'none', bomb: true });
-    t.step();
+    for (let i = 0; i < 41; i++) t.step();
+    expect(got.snaps.at(-1)?.players[0]?.alive).toBe(false);
     t.send({ seq: 2, dir: 'none', bomb: true });
-    t.step();
-    expect(got.snaps.at(-1)?.bombs).toHaveLength(1);
+    for (let i = 0; i < 70; i++) t.step();
+    expect(got.snaps.at(-1)?.players[0]?.alive).toBe(true);
+    expect(got.snaps.at(-1)?.bombs).toEqual([]);
     t.disconnect();
   });
 
