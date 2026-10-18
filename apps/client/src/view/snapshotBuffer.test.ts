@@ -113,7 +113,10 @@ describe('SnapshotBuffer', () => {
   it('copes with jitter as wide as the delay (150 ms +/- 50 ms): never starved, never backwards', () => {
     const b = new SnapshotBuffer();
     let seed = 7;
-    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const rnd = () => {
+      seed = (seed * 16807) % 2147483647;
+      return seed / 2147483647;
+    };
     const arrivals = Array.from({ length: 80 }, (_, i) => ({
       t: i,
       at: at(i) + 100 + rnd() * 100,
