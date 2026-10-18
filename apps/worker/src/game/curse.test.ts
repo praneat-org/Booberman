@@ -112,10 +112,13 @@ describe('curse item drops', () => {
     const s = board(['#x.A.x#'], {
       bombs: [{ x: 3, y: 1, ownerId: 'p1', ownerSession: 1, fuse: 1 }],
     });
-    expect(tick(s, {}, always)).toEqual(tick(s, {}, always));
-    const [, a] = nextRandom(s.rngSeed);
-    const [, b] = nextRandom(a);
-    expect(b).not.toBe(s.rngSeed); // sanity: the kind roll is a real draw
+    const first = tick(s, {}, always);
+    expect(tick(s, {}, always)).toEqual(first);
+    // two boxes break, each with a drop roll and a kind roll: 4 draws, all stored back in the state
+    let seed = s.rngSeed;
+    for (let i = 0; i < 4; i++) seed = nextRandom(seed)[1];
+    expect(first.state.items).toHaveLength(2);
+    expect(first.state.rngSeed).toBe(seed);
   });
 
   it('remembers the session of whoever broke the box', () => {
