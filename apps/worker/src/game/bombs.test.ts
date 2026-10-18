@@ -338,16 +338,16 @@ describe('death', () => {
 });
 
 describe('boxes and items', () => {
-  const always: GameConfig = { ...DEFAULT_CONFIG, itemDropChance: 1 };
+  const always: GameConfig = { ...DEFAULT_CONFIG, itemDropChance: 1, curseItemShare: 1 };
   const never: GameConfig = { ...DEFAULT_CONFIG, itemDropChance: 0 };
 
   it('a destroyed box drops an item when the roll is under itemDropChance', () => {
     const s = board(['#.xA..#'], { bombs: [due(3, 1, 'p1')] });
     const { state } = tick(s, {}, always);
     expect(state.items).toEqual([
-      { x: 2, y: 1, kind: DEFAULT_CONFIG.dropItemKind, droppedBy: 'p1' },
+      { x: 2, y: 1, kind: 'curse', droppedBy: 'p1', droppedBySession: 1 },
     ]);
-    expect(toSnapshot(state).items).toEqual([{ x: 2, y: 1, kind: DEFAULT_CONFIG.dropItemKind }]);
+    expect(toSnapshot(state).items).toEqual([{ x: 2, y: 1, kind: 'curse' }]);
   });
 
   it('no item when the roll is over the chance', () => {

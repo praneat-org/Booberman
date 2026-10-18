@@ -118,7 +118,17 @@ export function resolveExplosions(input: BlastInput, cfg: GameConfig): BlastResu
     const [roll, next] = nextRandom(rngSeed);
     rngSeed = next;
     if (roll < cfg.itemDropChance) {
-      dropped.push({ x, y, kind: cfg.dropItemKind, droppedBy: (broken.get(k) as Owner).id });
+      // second draw only when something drops, so boxes without an item cost one draw as before
+      const [kindRoll, afterKind] = nextRandom(rngSeed);
+      rngSeed = afterKind;
+      const by = broken.get(k) as Owner;
+      dropped.push({
+        x,
+        y,
+        kind: kindRoll < cfg.curseItemShare ? 'curse' : cfg.otherItemKind,
+        droppedBy: by.id,
+        droppedBySession: by.session,
+      });
     }
   }
 
