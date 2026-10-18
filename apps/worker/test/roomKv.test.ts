@@ -6,7 +6,7 @@ import {
   ROOM_KV_TTL_SECONDS,
   ROOMS_PATH,
 } from '@booberman/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RoomDO } from '../src/room/RoomDO';
 import {
   ROOM_KV_MIN_WRITE_INTERVAL_MS,
@@ -20,6 +20,9 @@ const stubFor = (room: string) => env.ROOM.get(env.ROOM.idFromName(room));
 const kvStats = (room: string) => runInDurableObject(stubFor(room), (r: RoomDO) => r.roomKvStats());
 const entry = (room: string) => env.ROOMS.getWithMetadata(`room:${room}`);
 
+/** Every room the integration tests touch; the unit tests below wait for all of them to go quiet. */
+const usedRooms = new Set<string>();
+
 let nextIp = 0;
 async function createRoom(): Promise<string> {
   const res = await exports.default.fetch(`http://localhost${ROOMS_PATH}`, {
@@ -27,7 +30,9 @@ async function createRoom(): Promise<string> {
     headers: { 'CF-Connecting-IP': `10.9.0.${++nextIp}` },
   });
   expect(res.status).toBe(201);
-  return ((await res.json()) as CreateRoomResponse).roomId;
+  const { roomId } = (await res.json()) as CreateRoomResponse;
+  usedRooms.add(roomId);
+  return roomId;
 }
 
 /** Polls until `check` passes (KV in miniflare is immediate, the DO's write is fire-and-forget). */
@@ -114,6 +119,7 @@ describe('RoomDO keeps the KV lobby entry in step (integration)', () => {
 
   it('a room opened by a direct link (no POST key) is playable but never gets a key', async () => {
     const room = 'direct1';
+    usedRooms.add(room);
     const a = await join(room, 'A');
     const b = await join(room, 'B');
     await eventually(async () => {
@@ -147,6 +153,27 @@ describe('RoomDO keeps the KV lobby entry in step (integration)', () => {
 
 describe('RoomKvSync (unit, fake KV + fake timers)', () => {
   afterEach(() => vi.useRealTimers());
+
+  // The DOs of the integration tests above share this isolate's globals. Test code closes their sockets
+  // and returns, so a DO may still process that close (leave -> RoomKvSync.update -> trailing setTimeout)
+  // after `vi.useFakeTimers()` ran, and its timer would land in the fake clock and break
+  // `vi.getTimerCount()` below (BE-52). Start the fake-timer tests only once every such room has run
+  // its last `leave()`.
+  // `!isTicking()` alone is NOT a safe signal: once a close starts, the socket is already gone from
+  // `getWebSockets()`, so a tick can call `stopLoop()` before `leave()` has run. Every room here ends
+  // empty, and only `leave()` -> `update(0)` -> `flush()` deletes the key, so `deletes >= 1` means
+  // the last leave ran; `!pending` then waits out the delete and any trailing timer.
+  beforeAll(async () => {
+    for (const room of usedRooms) {
+      await eventually(async () => {
+        const left = await runInDurableObject(stubFor(room), (r: RoomDO) => {
+          const stats = r.roomKvStats();
+          return (stats.deletes ?? 0) >= 1 && !stats.pending && !r.isTicking();
+        });
+        expect(left).toBe(true);
+      }, 10_000);
+    }
+  });
 
   function fakeKv(existing: unknown = { players: 0, max: 4, createdAt: 123 }) {
     const puts: { players: number; max: number; createdAt: number }[] = [];
