@@ -269,6 +269,34 @@ describe('MockTransport bombs (FE-15)', () => {
     t.disconnect();
   });
 
+  it('drops a bomb command that was sent in an earlier round but arrives after the restart (latency)', () => {
+    vi.useFakeTimers();
+    // tickMs huge: the interval never fires, we step by hand and only move fake time to flush the latency
+    const t = new MockTransport({ bots: 0, latencyMs: 100, tickMs: 1_000_000 });
+    const { got } = drive(t, 0);
+    const flush = () => vi.advanceTimersByTime(100);
+    const me = () => got.snaps.at(-1)?.players[0];
+    const roundStarts = () =>
+      got.events.filter((e) => (e as { kind?: string }).kind === 'roundStart').length;
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    flush();
+    for (let i = 0; i < 60 && me()?.alive !== false; i++) {
+      t.step();
+      flush();
+    }
+    expect(me()?.alive).toBe(false);
+    t.send({ seq: 2, dir: 'none', bomb: true }); // sent while dead, still in flight
+    for (let i = 0; i < 80 && roundStarts() === 0; i++) t.step(); // no flush: seq 2 stays in flight
+    t.step();
+    vi.advanceTimersByTime(100); // stale message lands now (snapshots too)
+    t.step();
+    flush();
+    expect(roundStarts()).toBe(1);
+    expect(me()?.alive).toBe(true);
+    expect(got.snaps.at(-1)?.bombs).toEqual([]);
+    t.disconnect();
+  });
+
   it('starts a new round with roundStart some ticks after we died', () => {
     const t = new MockTransport({ bots: 1 });
     const { got } = drive(t, 0);
