@@ -1,5 +1,6 @@
 import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
+import { joinFromLocation } from '../lobby/joinTarget';
 import { createTransport } from '../net/createTransport';
 import type { Unsubscribe } from '../net/Transport';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
@@ -59,7 +60,7 @@ export class GameScene extends Phaser.Scene {
       .setDepth(Depth.Marker)
       .setVisible(false);
 
-    const transport = createTransport(window.location.search);
+    const transport = createTransport(window.location.search, joinFromLocation(window.location));
     if (!transport) {
       this.add
         .text(
