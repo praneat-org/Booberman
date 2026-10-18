@@ -9,8 +9,19 @@ export const DEFAULT_INTERPOLATION_DELAY_MS = 100;
 export const SNAP_DISTANCE_TILES = 1.5;
 /** Hard cap so a tab that stops rendering (hidden) cannot grow the buffer without bound. */
 export const MAX_BUFFERED_SNAPSHOTS = 64;
-/** Snapshots averaged to estimate the clock offset (about 5 s). */
-const OFFSET_WINDOW = 100;
+/**
+ * Clock-offset estimator gains. Offset = latency + clock base, so a rising offset means the data
+ * is getting later: follow it quickly (otherwise the render time overtakes the newest snapshot
+ * and we starve). A falling offset only means we are further behind than needed: follow slowly.
+ * The first samples use a plain running mean (gain 1/n) so one early packet cannot set the clock.
+ */
+export const OFFSET_GAIN_UP = 0.15;
+export const OFFSET_GAIN_DOWN = 0.05;
+/** The render clock advances between these multiples of real time, so it never goes backward. */
+export const MIN_CLOCK_RATE = 0.5;
+export const MAX_CLOCK_RATE = 1.5;
+/** Further than this behind the target (tab was hidden, long stall): jump forward instead. */
+const RESYNC_TICKS = 10;
 
 export interface SnapshotBufferOptions {
   delayMs?: number;
@@ -38,7 +49,8 @@ interface Entry {
 
 /**
  * Snapshot buffer for entity interpolation. Server time is `tick * tickMs`; the mapping to the
- * local clock is `recvAt - tickTime` averaged over a window, so jitter does not wobble the render
+ * local clock is `recvAt - tickTime` smoothed by an asymmetric EMA (fast up, slow down), and the
+ * render clock follows it forward-only at a bounded rate, so jitter does not wobble the render
  * time and a packet up to `delay` later than average still arrives before it is needed. We draw at
  * `now - offset - delay`, lerp between the two snapshots around it, and never extrapolate: with no
  * newer snapshot everything stays on the newest one.
@@ -47,8 +59,10 @@ interface Entry {
  */
 export class SnapshotBuffer {
   private entries: Entry[] = [];
-  private offsets: number[] = [];
-  private offsetSum = 0;
+  private offset = 0;
+  private offsetCount = 0;
+  private clockTick: number | undefined;
+  private clockNow = 0;
   private lastBaseTick = -1;
   private readonly delayMs: number;
   private readonly tickMs: number;
@@ -73,10 +87,13 @@ export class SnapshotBuffer {
     if (latest !== undefined && msg.tick <= latest) return false;
     this.entries.push({ msg, recvAt });
     if (this.entries.length > MAX_BUFFERED_SNAPSHOTS) this.entries.shift();
-    const offset = recvAt - msg.tick * this.tickMs;
-    this.offsets.push(offset);
-    this.offsetSum += offset;
-    if (this.offsets.length > OFFSET_WINDOW) this.offsetSum -= this.offsets.shift() as number;
+    const sample = recvAt - msg.tick * this.tickMs;
+    this.offsetCount++;
+    const gain = Math.max(
+      sample > this.offset ? OFFSET_GAIN_UP : OFFSET_GAIN_DOWN,
+      1 / this.offsetCount,
+    );
+    this.offset += (sample - this.offset) * gain;
     return true;
   }
 
@@ -86,9 +103,7 @@ export class SnapshotBuffer {
     const last = this.entries[this.entries.length - 1];
     if (!first || !last) return undefined;
 
-    const offset = this.offsetSum / this.offsets.length;
-    const wanted = (now - offset - this.delayMs) / this.tickMs;
-    const renderTick = Math.min(last.msg.tick, Math.max(first.msg.tick, wanted));
+    const renderTick = this.advanceClock(now, first.msg.tick, last.msg.tick);
 
     let i = 0;
     while (i + 1 < this.entries.length && (this.entries[i + 1] as Entry).msg.tick <= renderTick)
@@ -123,11 +138,35 @@ export class SnapshotBuffer {
     return { base: a, renderTick, players };
   }
 
+  /**
+   * The render clock: aims at `(now - offset - delay) / tickMs` but only ever moves forward, at
+   * between MIN_CLOCK_RATE and MAX_CLOCK_RATE of real time. A rising offset therefore slows the
+   * clock down (and holds on the newest snapshot if it must) instead of stepping it back.
+   */
+  private advanceClock(now: number, oldest: number, newest: number): number {
+    const target = (now - this.offset - this.delayMs) / this.tickMs;
+    let tick = target;
+    if (this.clockTick !== undefined) {
+      const dt = Math.max(0, now - this.clockNow) / this.tickMs;
+      const gap = target - this.clockTick;
+      const step =
+        gap > RESYNC_TICKS
+          ? gap
+          : Math.min(dt * MAX_CLOCK_RATE, Math.max(dt * MIN_CLOCK_RATE, gap));
+      tick = this.clockTick + step;
+    }
+    this.clockNow = Math.max(now, this.clockNow);
+    this.clockTick = Math.min(newest, Math.max(oldest, tick));
+    return this.clockTick;
+  }
+
   /** New round / new connection: nothing from the old one may leak into the next. */
   reset(): void {
     this.entries = [];
-    this.offsets = [];
-    this.offsetSum = 0;
+    this.offset = 0;
+    this.offsetCount = 0;
+    this.clockTick = undefined;
+    this.clockNow = 0;
     this.lastBaseTick = -1;
   }
 }

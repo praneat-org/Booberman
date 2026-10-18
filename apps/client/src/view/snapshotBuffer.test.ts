@@ -1,7 +1,13 @@
 import { exampleServerMessages, type PlayerState } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
 import type { SnapshotMessage } from '../net/Transport';
-import { MAX_BUFFERED_SNAPSHOTS, SnapshotBuffer } from './snapshotBuffer';
+import {
+  MAX_BUFFERED_SNAPSHOTS,
+  MAX_CLOCK_RATE,
+  MIN_CLOCK_RATE,
+  SnapshotBuffer,
+  TICK_MS,
+} from './snapshotBuffer';
 
 const pl = (id: string, x: number, y = 1, teleport = false, alive = true): PlayerState => ({
   id,
@@ -69,6 +75,23 @@ describe('SnapshotBuffer', () => {
     expect(b.sample(at(13) + 10)?.players[0]?.teleport).toBe(false);
   });
 
+  it('the teleport flag alone stops the lerp: a 1-tile move is not walked (distance guard idle)', () => {
+    const b = new SnapshotBuffer();
+    b.push(snap(10, [pl('p1', 1)]), at(10));
+    b.push(snap(11, [pl('p1', 2, 1, true)]), at(11)); // 1 tile, well under SNAP_DISTANCE_TILES
+    b.push(snap(12, [pl('p1', 2)]), at(12));
+    b.push(snap(13, [pl('p1', 2)]), at(13));
+    const s = b.sample(at(12) + 25) as NonNullable<ReturnType<SnapshotBuffer['sample']>>;
+    expect(s.renderTick).toBeCloseTo(10.5); // strictly between 10 and 11, so f = 0.5
+    expect(s.players[0]?.x).toBe(1); // flag set: held at the old spot, not 1.5
+    // control: the same move without the flag is lerped
+    const c = new SnapshotBuffer();
+    c.push(snap(10, [pl('p1', 1)]), at(10));
+    c.push(snap(11, [pl('p1', 2)]), at(11));
+    c.push(snap(12, [pl('p1', 2)]), at(12));
+    expect(c.sample(at(12) + 25)?.players[0]?.x).toBeCloseTo(1.5);
+  });
+
   it('does not lose a teleport when frames skip over the snapshot that carried it', () => {
     const b = new SnapshotBuffer();
     b.push(snap(10, [pl('p1', 1)]), at(10));
@@ -80,13 +103,15 @@ describe('SnapshotBuffer', () => {
     expect(b.sample(at(14))?.players[0]?.teleport).toBe(true); // render tick 12, skipped tick 11
   });
 
-  it('snaps (no lerp) for a jump over 1.5 tiles even without the flag', () => {
+  it('the distance guard alone stops the lerp: a 4-tile jump with no flag is not walked', () => {
     const b = new SnapshotBuffer();
     b.push(snap(10, [pl('p1', 1)]), at(10));
-    b.push(snap(11, [pl('p1', 5)]), at(11));
+    b.push(snap(11, [pl('p1', 5)]), at(11)); // no teleport flag
     b.push(snap(12, [pl('p1', 5)]), at(12));
     b.push(snap(13, [pl('p1', 5)]), at(13));
-    expect(xOf(b, at(12) + 0)).toBe(1); // tick 10 + 0 → hold
+    const s = b.sample(at(12) + 25) as NonNullable<ReturnType<SnapshotBuffer['sample']>>;
+    expect(s.renderTick).toBeCloseTo(10.5);
+    expect(s.players[0]?.x).toBe(1);
     expect(xOf(b, at(13) - 1)).toBe(1);
   });
 
@@ -199,5 +224,128 @@ describe('SnapshotBuffer', () => {
     const s = b.sample(10_000);
     expect(s?.players[0]).toMatchObject({ x: 7, teleport: false });
     expect(s?.renderTick).toBe(1);
+  });
+
+  describe('render clock', () => {
+    interface Run {
+      ticks: number[];
+      held: number;
+      backward: number;
+      maxRate: number;
+      minRate: number;
+    }
+    /**
+     * Feeds ticks at 20 Hz through `latency(tick)` (ms, may be non-monotonic = reordering is
+     * dropped like a real transport would) and samples at 60 fps. `drift` = server clock runs
+     * this many ms/tick slower than local (offset grows linearly).
+     */
+    function run(
+      latency: (tick: number) => number,
+      opts: { seconds?: number; drift?: number; buffer?: SnapshotBuffer; from?: number } = {},
+    ): Run & { buffer: SnapshotBuffer } {
+      const b = opts.buffer ?? new SnapshotBuffer();
+      const total = Math.floor(((opts.seconds ?? 20) * 1000) / TICK_MS);
+      const first = opts.from ?? 0;
+      const arrivals = Array.from({ length: total }, (_, i) => ({
+        t: first + i,
+        at: i * (TICK_MS + (opts.drift ?? 0)) + latency(i),
+      })).sort((p, q) => p.at - q.at);
+      const out: Run = { ticks: [], held: 0, backward: 0, maxRate: 0, minRate: Infinity };
+      let prev: number | undefined;
+      let prevNow = 0;
+      let k = 0;
+      const end = (total - 4) * TICK_MS;
+      for (let now = 0; now < end; now += 1000 / 60) {
+        while (k < arrivals.length && (arrivals[k] as { at: number }).at <= now) {
+          const a = arrivals[k++] as { t: number; at: number };
+          b.push(snap(a.t, [pl('p1', a.t / 10)]), a.at);
+        }
+        const s = b.sample(now);
+        if (!s) continue;
+        if (prev !== undefined) {
+          if (s.renderTick < prev) out.backward++;
+          const rate = ((s.renderTick - prev) * TICK_MS) / (now - prevNow);
+          out.maxRate = Math.max(out.maxRate, rate);
+          out.minRate = Math.min(out.minRate, rate);
+        }
+        if (s.renderTick === b.latestTick) out.held++;
+        out.ticks.push(s.renderTick);
+        prev = s.renderTick;
+        prevNow = now;
+      }
+      return { ...out, buffer: b };
+    }
+    const MAX = MAX_CLOCK_RATE + 1e-9;
+    it('never goes backward and stays within the rate bounds at a steady 100 ms', () => {
+      const r = run(() => 100);
+      expect(r.backward).toBe(0);
+      expect(r.maxRate).toBeLessThanOrEqual(MAX);
+      expect(r.minRate).toBeGreaterThanOrEqual(0);
+      expect(r.held / r.ticks.length).toBeLessThan(0.02);
+    });
+
+    it('a latency step UP: the clock slows (never reverses) and recovers without lasting starvation', () => {
+      // 100 ms until 10 s, then 250 ms
+      const r = run((i) => (i < 200 ? 100 : 250), { seconds: 25 });
+      expect(r.backward).toBe(0);
+      expect(r.maxRate).toBeLessThanOrEqual(MAX);
+      // starved frames after the estimator has had 3 s to follow the step
+      const frameAt = (sec: number) => Math.floor(sec * 60);
+      const tail = r.ticks.slice(frameAt(13), frameAt(24));
+      const stuck = tail.filter((t, i) => i > 0 && t === tail[i - 1]).length;
+      expect(stuck / tail.length).toBeLessThan(0.03);
+    });
+
+    it('a latency step DOWN: the clock never reverses or jumps, and the extra lag drains', () => {
+      const r = run((i) => (i < 200 ? 250 : 60), { seconds: 25 });
+      expect(r.backward).toBe(0);
+      expect(r.maxRate).toBeLessThanOrEqual(MAX);
+      expect(r.minRate).toBeGreaterThanOrEqual(0);
+      // lag (newest arrived tick minus drawn tick) shrinks after the step
+      const lagAt = (sec: number) => {
+        const f = Math.floor(sec * 60);
+        return (sec * 1000 - 60) / TICK_MS - (r.ticks[f] as number);
+      };
+      expect(lagAt(24)).toBeLessThan(lagAt(10.5));
+    });
+
+    it('follows gradual drift in both directions (1 percent) without starving or reversing', () => {
+      for (const drift of [0.5, -0.5]) {
+        const r = run(() => 100, { seconds: 40, drift });
+        expect(r.backward).toBe(0);
+        expect(r.maxRate).toBeLessThanOrEqual(MAX);
+        expect(r.held / r.ticks.length).toBeLessThan(0.03);
+      }
+    });
+
+    it('stays monotonic and bounded under jitter as wide as the delay (150 +/- 50 ms)', () => {
+      let seed = 11;
+      const rnd = () => {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+      };
+      const r = run(() => 100 + rnd() * 100, { seconds: 30 });
+      expect(r.backward).toBe(0);
+      expect(r.maxRate).toBeLessThanOrEqual(MAX);
+      expect(r.held / r.ticks.length).toBeLessThan(0.05);
+    });
+
+    it('reset then refill: render tick restarts in the new timeline and is monotonic from there', () => {
+      const b = new SnapshotBuffer();
+      run(() => 100, { buffer: b, seconds: 5, from: 500 });
+      b.reset();
+      expect(b.sample(0)).toBeUndefined();
+      // new round: ticks restart at 1, and the very first packets are late (offset rises)
+      const r = run((i) => (i < 1 ? 100 : 300), { buffer: b, seconds: 10, from: 1 });
+      expect(r.backward).toBe(0);
+      expect(r.ticks[0]).toBeGreaterThanOrEqual(1);
+      expect(r.ticks[0]).toBeLessThan(5);
+      expect(r.maxRate).toBeLessThanOrEqual(MAX);
+    });
+
+    it('rate bounds are the documented constants', () => {
+      expect(MIN_CLOCK_RATE).toBeGreaterThan(0);
+      expect(MAX_CLOCK_RATE).toBeLessThanOrEqual(2);
+    });
   });
 });
