@@ -172,7 +172,8 @@ export class LobbyController {
   private go(roomId: string, nickname: string): void {
     saveNickname(nickname, this.storage);
     this.patch({ creating: false, navigating: true, createError: null });
-    this.navigate(roomPath(roomId));
+    // the nickname rides in the URL: localStorage may be blocked, so it cannot be the only carrier
+    this.navigate(roomPath(roomId, nickname));
   }
 
   private startCooldown(seconds: number): void {

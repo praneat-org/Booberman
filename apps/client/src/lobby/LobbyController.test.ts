@@ -111,7 +111,7 @@ describe('LobbyController create room', () => {
     expect(f).toHaveBeenCalledTimes(1);
     gate.resolve(json({ roomId: 'abc123' }, { status: 201 }));
     await first;
-    expect(navigate).toHaveBeenCalledExactlyOnceWith('/room/abc123');
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/room/abc123?nick=Mint');
     expect(c.state.navigating).toBe(true);
     // everything is locked once we leave
     c.joinRoom('zzz999');
@@ -151,7 +151,7 @@ describe('LobbyController create room', () => {
     expect(c.state.createError).toBe(CREATE_ERROR_MESSAGE);
     expect(c.state.creating).toBe(false);
     await c.createRoom();
-    expect(navigate).toHaveBeenCalledWith('/room/abc123');
+    expect(navigate).toHaveBeenCalledWith('/room/abc123?nick=Mint');
   });
 
   it('does not navigate if the screen was destroyed while the POST was in flight', async () => {
@@ -174,8 +174,36 @@ describe('LobbyController join from list', () => {
     expect(c.state.nicknameError).toBe('ใส่ชื่อก่อนนะ');
     c.setNickname('Mint');
     c.joinRoom('abc123');
-    expect(navigate).toHaveBeenCalledWith('/room/abc123');
+    expect(navigate).toHaveBeenCalledWith('/room/abc123?nick=Mint');
     expect(storage.data.get(NICKNAME_STORAGE_KEY)).toBe('Mint');
+  });
+});
+
+describe('LobbyController with storage that throws', () => {
+  const blocked = {
+    getItem: () => {
+      throw new Error('blocked');
+    },
+    setItem: () => {
+      throw new Error('blocked');
+    },
+  };
+
+  it('create, list-click and retry all still carry the chosen nickname', async () => {
+    const f = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('offline'))
+      .mockResolvedValueOnce(json({ roomId: 'abc123' }, { status: 201 }));
+    const { c, navigate } = make(f as never, blocked as never);
+    c.setNickname('  มิ้นท์ ');
+    await c.createRoom(); // fails, retry
+    await c.createRoom();
+    expect(navigate).toHaveBeenLastCalledWith(`/room/abc123?nick=${encodeURIComponent('มิ้นท์')}`);
+
+    const second = make(vi.fn() as never, blocked as never);
+    second.c.setNickname('Mint_01');
+    second.c.joinRoom('zzz999');
+    expect(second.navigate).toHaveBeenCalledExactlyOnceWith('/room/zzz999?nick=Mint_01');
   });
 });
 

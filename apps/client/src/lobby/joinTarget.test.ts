@@ -25,6 +25,13 @@ describe('roomIdFromPath', () => {
   });
   it('roomPath is the inverse', () => {
     expect(roomIdFromPath(roomPath('xyz789'))).toBe('xyz789');
+    expect(roomPath('xyz789')).toBe('/room/xyz789');
+  });
+  it('roomPath with a nickname round-trips through joinFromLocation without any storage', () => {
+    for (const nick of ['มิ้นท์', 'Mint_01', 'Bo']) {
+      const url = new URL(roomPath('xyz789', nick), 'http://x');
+      expect(joinFromLocation(url, '')).toEqual({ roomId: 'xyz789', nickname: nick });
+    }
   });
 });
 

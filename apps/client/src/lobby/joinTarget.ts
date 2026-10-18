@@ -14,8 +14,10 @@ export function roomIdFromPath(pathname: string): string | undefined {
   return RoomId.safeParse(id).success ? id : undefined;
 }
 
-export function roomPath(roomId: string): string {
-  return `/room/${roomId}`;
+/** `/room/<id>`; with a nickname it also carries `?nick=` so the choice survives blocked storage. */
+export function roomPath(roomId: string, nickname?: string): string {
+  const base = `/room/${roomId}`;
+  return nickname === undefined ? base : `${base}?nick=${encodeURIComponent(nickname)}`;
 }
 
 /** Must satisfy `RoomId` (4-12 chars a-z0-9, D16). */

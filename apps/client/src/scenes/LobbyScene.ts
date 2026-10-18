@@ -28,11 +28,14 @@ export class LobbyScene extends Phaser.Scene {
     const overlay = new LobbyOverlay(controller, parent);
     // scene shutdown (or game destroy) must drop the DOM, timers and any in-flight fetch
     const cleanup = () => {
+      this.events.off(Phaser.Scenes.Events.SHUTDOWN, cleanup);
+      this.events.off(Phaser.Scenes.Events.DESTROY, cleanup);
       overlay.destroy();
       controller.destroy();
     };
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, cleanup);
     this.events.once(Phaser.Scenes.Events.DESTROY, cleanup);
     controller.start();
+    if (import.meta.env.DEV) (window as unknown as { __bbLobby?: unknown }).__bbLobby = this;
   }
 }

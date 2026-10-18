@@ -10,15 +10,16 @@ describe('nicknameMessage', () => {
   });
 
   it.each([
-    ['', 'EMPTY'],
-    ['   ', 'EMPTY'],
-    ['abcdefghijklm', 'TOO_LONG'],
-    ['a b', 'CONTAINS_SPACE'],
-    ['a-b', 'INVALID_CHARS'],
-    ['😀', 'INVALID_CHARS'],
-  ])('%j maps to %s', (raw, reason) => {
+    ['', 'EMPTY', 'ใส่ชื่อก่อนนะ'],
+    ['   ', 'EMPTY', 'ใส่ชื่อก่อนนะ'],
+    ['abcdefghijklm', 'TOO_LONG', 'ชื่อยาวเกินไป ใช้ได้ไม่เกิน 12 ตัวอักษร'],
+    ['a b', 'CONTAINS_SPACE', 'ชื่อห้ามมีช่องว่างตรงกลาง'],
+    ['a-b', 'INVALID_CHARS', 'ใช้ได้เฉพาะภาษาไทย อังกฤษ ตัวเลข และขีดล่าง (_)'],
+    ['😀', 'INVALID_CHARS', 'ใช้ได้เฉพาะภาษาไทย อังกฤษ ตัวเลข และขีดล่าง (_)'],
+  ])('%j is rejected as %s and shown as the expected Thai text', (raw, reason, message) => {
     const result = validateNickname(raw);
     expect(result).toEqual({ ok: false, reason });
+    if (!result.ok) expect(nicknameMessage(result.reason)).toBe(message);
   });
 
   it('says what is wrong, not just that something is', () => {
