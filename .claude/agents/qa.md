@@ -44,12 +44,15 @@ skills:
    - PR ถูกปิดโดยไม่ merge → เอา label ออก → `Todo` + comment ถามคนว่าทำไมปิด
    - ยังเปิดอยู่ → ข้าม (รอคน merge)
 2. **ยังไม่ติด label** — ดู review ของ CodeRabbit บน commit ล่าสุดของ PR (`gh pr view --json reviews,comments`, `gh api repos/{owner}/{repo}/pulls/{n}/comments`)
-   - CodeRabbit ยัง review commit ล่าสุดไม่เสร็จ → ข้ามไป tick หน้า
-   - **มี thread ที่ยังไม่ resolve และ Dev ยังไม่ได้ตอบ** → นับรอบ N (จำนวน comment `[CodeRabbit] รอบ` ที่มีอยู่ + 1)
-     - N ≤ 3 → status `Todo` + comment `[CodeRabbit] รอบ N` เป็นตาราง: # · category · file:line · สรุป finding · ลิงก์ thread
+   - CodeRabbit ยัง review commit ล่าสุดไม่เสร็จ → ข้ามไป tick หน้า · commit status ของ CodeRabbit ที่เป็น "Review paused" = **ยังไม่ได้ review** commit นั้น (ไม่ใช่ผ่าน)
+   - **finding มี 2 แบบ ต้องนับทั้งคู่** (BE-55):
+     - inline thread ที่ยังไม่ resolve
+     - finding ใน **body ของ review** — หัวข้อ "Outside diff range comments" / "Outside diff comments" และ "Actionable comments" ที่ชี้บรรทัดนอก diff (ไม่มี thread ให้ resolve) · ถือว่าตัดสินแล้วเมื่อมี PR comment ของ Dev ที่อ้าง file:line นั้นพร้อม decision
+   - **มี finding ที่ Dev ยังไม่ตัดสิน** → นับรอบ N (จำนวน comment `[CodeRabbit] รอบ` ที่มีอยู่ + 1)
+     - N ≤ 3 → status `Todo` + comment `[CodeRabbit] รอบ N` เป็นตาราง: # · category · file:line · สรุป finding · ลิงก์ thread (finding นอก diff: ลิงก์ review + ระบุว่า "outside diff")
      - N ≥ 4 → label `needs-human` + comment สรุปว่าวนเรื่องอะไรอยู่ · ไม่เปลี่ยน status
    - thread ที่ Dev ตอบ `wont-fix` / `deferred` แล้วแต่ยังไม่ resolve ถือว่าตัดสินแล้ว ไม่ตีกลับซ้ำ — ยกเว้น CodeRabbit ตอบกลับว่ายังเป็น security / game-rule issue → `needs-human`
-   - **ไม่มี thread ค้าง** → ทำขั้น "พร้อม merge"
+   - **ไม่มี finding ค้าง** (ทั้ง thread และนอก diff) → ทำขั้น "พร้อม merge"
 
 **ขั้นพร้อม merge**
 1. แก้ description ของ PR: ต่อท้ายของเดิมด้วย
