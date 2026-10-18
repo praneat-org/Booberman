@@ -1,27 +1,25 @@
 import type { GameEvent } from '@booberman/protocol';
 import type { WelcomeMessage } from '../net/Transport';
-import type { BoxField } from './boardView';
-import type { PlayerAnimTracker } from './playerAnim';
+import type { RoundView } from './roundView';
 
 /**
  * Applies the server messages that replace or edit the board. A new board (welcome / roundStart)
- * also clears the animation tracker, otherwise the first snapshot of the new round is compared with
- * the old positions (e.g. a corpse) and plays a one-tick walk from the spawn.
+ * resets all per-round view state through `RoundView.reset` (snapshot, animations, boxes), otherwise
+ * the old round keeps being drawn until the next snapshot. The scene also destroys its sprites.
  */
-export function applyWelcome(
-  msg: Pick<WelcomeMessage, 'grid'>,
-  boxes: BoxField,
-  anims: PlayerAnimTracker,
-): void {
-  boxes.reset(msg.grid);
-  anims.reset();
+export function applyWelcome(msg: Pick<WelcomeMessage, 'grid'>, round: RoundView): void {
+  round.reset(msg.grid);
 }
 
-export function applyBoardEvent(msg: GameEvent, boxes: BoxField, anims: PlayerAnimTracker): void {
+/** Returns true when the board was replaced (roundStart), so the scene can drop its sprites. */
+export function applyBoardEvent(msg: GameEvent, round: RoundView): boolean {
   if (msg.kind === 'boxDestroyed') {
-    boxes.destroy(msg.x, msg.y);
-  } else if (msg.kind === 'roundStart') {
-    boxes.reset(msg.grid);
-    anims.reset();
+    round.boxes.destroy(msg.x, msg.y);
+    return false;
   }
+  if (msg.kind === 'roundStart') {
+    round.reset(msg.grid);
+    return true;
+  }
+  return false;
 }

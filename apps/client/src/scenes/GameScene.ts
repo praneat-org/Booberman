@@ -1,14 +1,12 @@
 import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
 import { createTransport } from '../net/createTransport';
-import type { SnapshotMessage, Unsubscribe } from '../net/Transport';
+import type { Unsubscribe } from '../net/Transport';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
-import { BoxField } from '../view/boardView';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
-import { toBombViews, toFlameViews, toItemViews } from '../view/entityViews';
 import { BOARD_HEIGHT_PX, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
-import { IDLE_FRAME, type PlayerAnim, PlayerAnimTracker, walkAnimKey } from '../view/playerAnim';
-import { toPlayerViews } from '../view/playerViews';
+import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
+import { type Drawable, RoundView } from '../view/roundView';
 import { AssetKey, SceneKey } from './keys';
 
 /** Draw order, back to front. */
@@ -24,10 +22,8 @@ type Sprite = Phaser.GameObjects.Sprite;
  */
 export class GameScene extends Phaser.Scene {
   private selfId: PlayerId | undefined;
-  private latest: SnapshotMessage | undefined;
-  private playerAnims: Map<string, PlayerAnim> = new Map();
-  private readonly animTracker = new PlayerAnimTracker();
-  private boxes = new BoxField();
+  /** All per-round view state that is not a sprite; `resetRound` is the only way to start a round. */
+  private round = new RoundView();
   private players = new Map<string, Sprite>();
   private boxSprites = new Map<string, Sprite>();
   private bombSprites = new Map<string, Sprite>();
@@ -53,11 +49,8 @@ export class GameScene extends Phaser.Scene {
     this.bombSprites = new Map();
     this.flameSprites = new Map();
     this.itemSprites = new Map();
-    this.boxes = new BoxField();
-    this.animTracker.reset();
-    this.playerAnims = new Map();
+    this.round = new RoundView();
     this.tracker = new DirectionTracker();
-    this.latest = undefined;
     this.selfId = undefined;
     this.bombPressed = false;
     this.marker = this.add
@@ -87,14 +80,12 @@ export class GameScene extends Phaser.Scene {
     const cleanups: Unsubscribe[] = [
       transport.onWelcome((msg) => {
         this.selfId = msg.playerId;
-        applyWelcome(msg, this.boxes, this.animTracker);
+        applyWelcome(msg, this.round);
+        this.destroyRoundSprites();
       }),
-      transport.onSnapshot((msg) => {
-        this.latest = msg;
-        this.playerAnims = this.animTracker.update(msg.players, msg.tick);
-      }),
+      transport.onSnapshot((msg) => this.round.applySnapshot(msg)),
       transport.onEvent((msg) => {
-        applyBoardEvent(msg, this.boxes, this.animTracker);
+        if (applyBoardEvent(msg, this.round)) this.destroyRoundSprites();
       }),
       transport.onError((code, message) => console.warn('[transport] error', code, message)),
     ];
@@ -112,7 +103,7 @@ export class GameScene extends Phaser.Scene {
       (window as unknown as { __booberman?: unknown }).__booberman = {
         scene: this,
         transport,
-        snapshot: () => this.latest,
+        snapshot: () => this.round.latest,
         selfId: () => this.selfId,
       };
     }
@@ -122,16 +113,33 @@ export class GameScene extends Phaser.Scene {
     this.sender?.update(this.tracker.current(), this.bombPressed);
     this.bombPressed = false;
     this.drawBoxes();
-    if (this.latest) {
-      this.drawBombs(this.latest);
-      this.drawFlames(this.latest);
-      this.drawItems(this.latest);
-      this.drawPlayers(this.latest);
+    const d = this.round.drawable(this.selfId);
+    this.drawBombs(d.bombs);
+    this.drawFlames(d.flames);
+    this.drawItems(d.items);
+    this.drawPlayers(d.players);
+  }
+
+  /**
+   * New round: drop every sprite of the old one (the view state itself was reset by
+   * `RoundView.reset`). Boxes are re-synced from the new grid on the next update.
+   */
+  private destroyRoundSprites(): void {
+    for (const pool of [
+      this.boxSprites,
+      this.bombSprites,
+      this.flameSprites,
+      this.itemSprites,
+      this.players,
+    ]) {
+      for (const sprite of pool.values()) sprite.destroy();
+      pool.clear();
     }
+    this.marker?.setVisible(false);
   }
 
   private drawBoxes(): void {
-    const views = this.boxes.list().map((b) => ({ key: `${b.x},${b.y}`, ...b }));
+    const views = this.round.boxes.list().map((b) => ({ key: `${b.x},${b.y}`, ...b }));
     this.sync(this.boxSprites, views, (v) =>
       this.add
         .sprite(v.x * TILE_SIZE, v.y * TILE_SIZE, AssetKey.Box)
@@ -140,8 +148,7 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
-  private drawBombs(snapshot: SnapshotMessage): void {
-    const views = toBombViews(snapshot.bombs);
+  private drawBombs(views: Drawable['bombs']): void {
     this.sync(this.bombSprites, views, (v) =>
       this.add.sprite(v.px, v.py, AssetKey.Bomb, 0).setOrigin(0, 0).setDepth(Depth.Bomb),
     );
@@ -154,29 +161,24 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private drawFlames(snapshot: SnapshotMessage): void {
-    const views = toFlameViews(snapshot.flames, snapshot.tick);
+  private drawFlames(views: Drawable['flames']): void {
     this.sync(this.flameSprites, views, (v) =>
       this.add.sprite(v.px, v.py, AssetKey.Flame, v.frame).setOrigin(0, 0).setDepth(Depth.Flame),
     );
     for (const v of views) this.flameSprites.get(v.key)?.setFrame(v.frame);
   }
 
-  private drawItems(snapshot: SnapshotMessage): void {
-    const views = toItemViews(snapshot.items);
+  private drawItems(views: Drawable['items']): void {
     this.sync(this.itemSprites, views, (v) =>
       this.add.sprite(v.px, v.py, AssetKey.Items, v.frame).setOrigin(0, 0).setDepth(Depth.Item),
     );
     for (const v of views) this.itemSprites.get(v.key)?.setFrame(v.frame);
   }
 
-  private drawPlayers(snapshot: SnapshotMessage): void {
-    const views = toPlayerViews(snapshot.players, this.selfId);
+  private drawPlayers(players: Drawable['players']): void {
     const seen = new Set<string>();
     let selfSprite: Sprite | undefined;
-    for (const view of views) {
-      const anim = this.playerAnims.get(view.id);
-      if (!anim || anim.phase === 'gone') continue;
+    for (const { view, anim } of players) {
       seen.add(view.id);
       let sprite = this.players.get(view.id);
       if (!sprite) {
