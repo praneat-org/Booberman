@@ -9,7 +9,7 @@ export const DEFAULT_INTERPOLATION_DELAY_MS = 100;
 export const SNAP_DISTANCE_TILES = 1.5;
 /** Hard cap so a tab that stops rendering (hidden) cannot grow the buffer without bound. */
 export const MAX_BUFFERED_SNAPSHOTS = 64;
-/** Snapshots over which the clock offset is estimated (about 5 s). */
+/** Snapshots averaged to estimate the clock offset (about 5 s). */
 const OFFSET_WINDOW = 100;
 
 export interface SnapshotBufferOptions {
@@ -38,8 +38,8 @@ interface Entry {
 
 /**
  * Snapshot buffer for entity interpolation. Server time is `tick * tickMs`; the mapping to the
- * local clock is `recvAt - tickTime`, taking the minimum over a window so network jitter (which
- * only ever makes a packet later) does not wobble the render time. We draw at
+ * local clock is `recvAt - tickTime` averaged over a window, so jitter does not wobble the render
+ * time and a packet up to `delay` later than average still arrives before it is needed. We draw at
  * `now - offset - delay`, lerp between the two snapshots around it, and never extrapolate: with no
  * newer snapshot everything stays on the newest one.
  *
@@ -48,6 +48,7 @@ interface Entry {
 export class SnapshotBuffer {
   private entries: Entry[] = [];
   private offsets: number[] = [];
+  private offsetSum = 0;
   private lastBaseTick = -1;
   private readonly delayMs: number;
   private readonly tickMs: number;
@@ -72,8 +73,10 @@ export class SnapshotBuffer {
     if (latest !== undefined && msg.tick <= latest) return false;
     this.entries.push({ msg, recvAt });
     if (this.entries.length > MAX_BUFFERED_SNAPSHOTS) this.entries.shift();
-    this.offsets.push(recvAt - msg.tick * this.tickMs);
-    if (this.offsets.length > OFFSET_WINDOW) this.offsets.shift();
+    const offset = recvAt - msg.tick * this.tickMs;
+    this.offsets.push(offset);
+    this.offsetSum += offset;
+    if (this.offsets.length > OFFSET_WINDOW) this.offsetSum -= this.offsets.shift() as number;
     return true;
   }
 
@@ -83,7 +86,7 @@ export class SnapshotBuffer {
     const last = this.entries[this.entries.length - 1];
     if (!first || !last) return undefined;
 
-    const offset = Math.min(...this.offsets);
+    const offset = this.offsetSum / this.offsets.length;
     const wanted = (now - offset - this.delayMs) / this.tickMs;
     const renderTick = Math.min(last.msg.tick, Math.max(first.msg.tick, wanted));
 
@@ -124,6 +127,7 @@ export class SnapshotBuffer {
   reset(): void {
     this.entries = [];
     this.offsets = [];
+    this.offsetSum = 0;
     this.lastBaseTick = -1;
   }
 }

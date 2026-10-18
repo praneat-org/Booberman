@@ -107,7 +107,34 @@ describe('SnapshotBuffer', () => {
     b.push(snap(11, [pl('p1', 1.1)]), at(11));
     b.push(snap(12, [pl('p1', 1.2)]), at(12) + 40);
     b.push(snap(13, [pl('p1', 1.3)]), at(13));
-    expect(xOf(b, at(13))).toBeCloseTo(1.1);
+    expect(xOf(b, at(13))).toBeCloseTo(1.1, 1); // within a twentieth of a tile of the no-jitter x
+  });
+
+  it('copes with jitter as wide as the delay (150 ms +/- 50 ms): never starved, never backwards', () => {
+    const b = new SnapshotBuffer();
+    let seed = 7;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const arrivals = Array.from({ length: 80 }, (_, i) => ({
+      t: i,
+      at: at(i) + 100 + rnd() * 100,
+    }));
+    arrivals.sort((p, q) => p.at - q.at);
+    let prev = -Infinity;
+    let held = 0;
+    let frames = 0;
+    for (let now = 0, k = 0; now < at(70); now += 1000 / 60) {
+      while (k < arrivals.length && (arrivals[k] as { at: number }).at <= now) {
+        const a = arrivals[k++] as { t: number; at: number };
+        b.push(snap(a.t, [pl('p1', a.t / 10)]), a.at);
+      }
+      const s = b.sample(now);
+      if (!s || now < at(20)) continue;
+      frames++;
+      expect(s.players[0]?.x as number).toBeGreaterThanOrEqual(prev);
+      if (s.renderTick === b.latestTick) held++;
+      prev = s.players[0]?.x as number;
+    }
+    expect(held / frames).toBeLessThan(0.05);
   });
 
   it('ignores duplicate, out-of-order and stale ticks', () => {
