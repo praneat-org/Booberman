@@ -44,6 +44,19 @@ describe('RoundView interpolation', () => {
     expect(r.playerAnims.get('p1')?.moving).toBe(false);
   });
 
+  it('a distance snap with no server flag is not a walk either', () => {
+    const r = new RoundView(0);
+    send(r, 10, pl(1));
+    send(r, 11, pl(1.1));
+    r.frame(500);
+    r.frame(525);
+    expect(r.playerAnims.get('p1')?.moving).toBe(true);
+    send(r, 12, pl(8));
+    send(r, 13, pl(8));
+    r.frame(650);
+    expect(r.playerAnims.get('p1')?.moving).toBe(false);
+  });
+
   it('welcome and roundStart empty the buffer; lower ticks of the next round are accepted', () => {
     for (const reset of [
       (r: RoundView) => applyWelcome({ grid: exampleGrid() }, r),

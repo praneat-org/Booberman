@@ -35,9 +35,11 @@ export interface Sample {
   /** Fractional server tick being drawn; always within [oldest, newest] buffered tick. */
   renderTick: number;
   /**
-   * `base.players` with x / y interpolated. `teleport` is true for a player who snapped since
-   * the previous `sample` call (server flag on any skipped snapshot, or a jump over the snap
-   * distance), not the raw flag, so it holds for exactly one sample.
+   * `base.players` with x / y interpolated. `teleport` is true for a player whose drawn position
+   * snapped since the previous `sample` call, whatever the reason: the server flag on any snapshot
+   * passed since then, or the drawn position moved further than the snap distance from the one
+   * returned last time (a jump between adjacent snapshots, skipped snapshots, a stall resync).
+   * It is not the raw flag, and it holds for exactly one sample.
    */
   players: PlayerState[];
 }
@@ -64,6 +66,7 @@ export class SnapshotBuffer {
   private clockTick: number | undefined;
   private clockNow = 0;
   private lastBaseTick = -1;
+  private lastDrawn = new Map<string, { x: number; y: number }>();
   private readonly delayMs: number;
   private readonly tickMs: number;
 
@@ -133,8 +136,11 @@ export class SnapshotBuffer {
         x = p.x + (next.x - p.x) * f;
         y = p.y + (next.y - p.y) * f;
       }
-      return { ...p, x, y, teleport: teleported.has(p.id) };
+      const prev = this.lastDrawn.get(p.id);
+      const jumped = prev !== undefined && Math.hypot(x - prev.x, y - prev.y) > SNAP_DISTANCE_TILES;
+      return { ...p, x, y, teleport: teleported.has(p.id) || jumped };
     });
+    this.lastDrawn = new Map(players.map((p) => [p.id, { x: p.x, y: p.y }]));
     return { base: a, renderTick, players };
   }
 
@@ -168,5 +174,6 @@ export class SnapshotBuffer {
     this.clockTick = undefined;
     this.clockNow = 0;
     this.lastBaseTick = -1;
+    this.lastDrawn = new Map();
   }
 }

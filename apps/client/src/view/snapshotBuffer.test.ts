@@ -349,3 +349,80 @@ describe('SnapshotBuffer', () => {
     });
   });
 });
+
+describe('SnapshotBuffer teleport flag covers every reason it snaps', () => {
+  const tp = (b: SnapshotBuffer, now: number) => b.sample(now)?.players[0]?.teleport;
+
+  it('server flag: set for exactly one sample', () => {
+    const b = new SnapshotBuffer();
+    b.push(snap(10, [pl('p1', 1)]), at(10));
+    b.push(snap(11, [pl('p1', 2, 1, true)]), at(11));
+    b.push(snap(12, [pl('p1', 2)]), at(12));
+    b.push(snap(13, [pl('p1', 2)]), at(13));
+    expect(tp(b, at(12))).toBe(false);
+    expect(tp(b, at(13))).toBe(true);
+    expect(tp(b, at(13) + 5)).toBe(false);
+  });
+
+  it('distance guard on adjacent snapshots, no server flag: reported as a teleport once', () => {
+    const b = new SnapshotBuffer();
+    b.push(snap(10, [pl('p1', 1)]), at(10));
+    b.push(snap(11, [pl('p1', 5)]), at(11));
+    b.push(snap(12, [pl('p1', 5)]), at(12));
+    b.push(snap(13, [pl('p1', 5)]), at(13));
+    expect(b.sample(at(12) + 25)?.players[0]).toMatchObject({ x: 1, teleport: false });
+    expect(b.sample(at(13))?.players[0]).toMatchObject({ x: 5, teleport: true });
+    expect(tp(b, at(13) + 5)).toBe(false);
+  });
+
+  it('distance exactly at the guard is a walk, just over it is a teleport', () => {
+    const run = (dx: number) => {
+      const b = new SnapshotBuffer();
+      b.push(snap(10, [pl('p1', 1)]), at(10));
+      b.push(snap(11, [pl('p1', 1 + dx)]), at(11));
+      b.push(snap(12, [pl('p1', 1 + dx)]), at(12));
+      b.push(snap(13, [pl('p1', 1 + dx)]), at(13));
+      b.sample(at(12) + 25);
+      return tp(b, at(13));
+    };
+    expect(run(1.5)).toBe(false);
+    expect(run(1.6)).toBe(true);
+  });
+
+  it('jump hidden by skipped snapshots (no flag on any, each step small): still a teleport', () => {
+    const b = new SnapshotBuffer();
+    for (let t = 10; t <= 14; t++) b.push(snap(t, [pl('p1', 1 + (t - 10) * 1)]), at(t)); // 1 tile / tick
+    expect(tp(b, at(10) + 100)).toBe(false); // render tick 10: x = 1
+    expect(b.sample(at(14))?.players[0]).toMatchObject({ x: 3, teleport: true }); // 2 tiles later
+  });
+
+  it('a stalled tab resuming far ahead is a teleport, normal walking is never one', () => {
+    const b = new SnapshotBuffer();
+    for (let t = 10; t < 40; t++) b.push(snap(t, [pl('p1', 1 + (t - 10) * 0.2)]), at(t));
+    expect(tp(b, at(12))).toBe(false);
+    for (let n = 13; n < 20; n++) expect(tp(b, at(n))).toBe(false);
+    expect(tp(b, at(39))).toBe(true); // resync jump of ~4 tiles
+  });
+
+  it('plain 0.2 tile / tick walking never reports a teleport', () => {
+    const b = new SnapshotBuffer();
+    for (let t = 10; t < 30; t++) b.push(snap(t, [pl('p1', 1 + (t - 10) * 0.2)]), at(t));
+    for (let now = at(12); now <= at(29); now += 16) expect(tp(b, now)).toBe(false);
+  });
+
+  it('is tracked per player, a player appearing late is not a teleport, reset forgets positions', () => {
+    const b = new SnapshotBuffer();
+    b.push(snap(10, [pl('p1', 1)]), at(10));
+    b.push(snap(11, [pl('p1', 1), pl('p2', 9)]), at(11));
+    b.push(snap(12, [pl('p1', 6), pl('p2', 9)]), at(12));
+    b.push(snap(13, [pl('p1', 6), pl('p2', 9)]), at(13));
+    b.push(snap(14, [pl('p1', 6), pl('p2', 9)]), at(14));
+    b.sample(at(12));
+    const s = b.sample(at(14)) as NonNullable<ReturnType<SnapshotBuffer['sample']>>;
+    expect(s.players.find((p) => p.id === 'p1')?.teleport).toBe(true);
+    expect(s.players.find((p) => p.id === 'p2')?.teleport).toBe(false);
+    b.reset();
+    b.push(snap(1, [pl('p1', 12)]), at(1));
+    expect(tp(b, at(3))).toBe(false);
+  });
+});
