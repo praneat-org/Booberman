@@ -9,7 +9,7 @@ description: วิธีเขียน apps/client ของ Booberman ด้�
 
 ## หลักที่ห้ามพลาด
 1. **Client ไม่ตัดสินผลเกม** — ไม่คำนวณการตาย, การเก็บ item, การชนะ, การชนของระเบิด · วาดจาก `snapshot` / event ของ server เท่านั้น · ส่งได้แค่ `input`
-2. **ทุก message ขาเข้าผ่าน `parseServerMessage`** จาก `@booberman/protocol` ก่อนใช้งาน · message ที่ parse ไม่ผ่าน → log แล้วทิ้ง ไม่ throw
+2. **ทุก message ขาเข้าผ่าน `parseServerMessage`** จาก `@booberman/protocol` ก่อนใช้งาน · ตัวอย่าง message ทุกชนิดอยู่ใน `exampleServerMessages` (ใช้ใน MockTransport ได้เลย) · message ที่ parse ไม่ผ่าน → log แล้วทิ้ง ไม่ throw
 3. **Logic ที่ test ได้อยู่นอก Scene** — interpolation buffer, การแปลง snapshot → view model, การ map input → message เขียนเป็น pure function / class ใน `src/net/`, `src/view/` แล้ว unit test ด้วย vitest · Scene แค่เรียกใช้
 
 ## โครงไฟล์
@@ -31,11 +31,11 @@ export const config: Phaser.Types.Core.GameConfig = {
   pixelArt: true,             // ไม่เบลอ (ห้ามลบ)
   roundPixels: true,
   backgroundColor: '#1b1b2f',
-  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: 15 * 16, height: 13 * 16 },
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: GRID_WIDTH * 16, height: GRID_HEIGHT * 16 },
   scene: [BootScene, LobbyScene, GameScene, HudScene],
 };
 ```
-- ขนาด logical = จำนวน tile × 16 px แล้วให้ `Scale.FIT` ขยาย · ต้องใช้ได้ที่ 360×740 (แนวตั้ง) และ 1280×800
+- ขนาด logical = กระดาน 13×11 tile (`GRID_WIDTH` / `GRID_HEIGHT` จาก `@booberman/protocol`) × 16 px แล้วให้ `Scale.FIT` ขยาย · พื้นที่ HUD / ปุ่มมือถืออยู่นอกกระดาน · ต้องใช้ได้ที่ 360×740 (แนวตั้ง) และ 1280×800
 - import: `import Phaser from 'phaser'`
 
 ## Scene

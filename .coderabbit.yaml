@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit config for Booberman (BE-25 / CAR-3785). Flow: Decision log D14 + CONTRIBUTING.md.
+language: th-TH
+tone_instructions: "ตอบเป็นภาษาไทย สั้น ตรงประเด็น อ้างไฟล์และบรรทัด บอกเหตุผลและวิธีแก้ ไม่ต้องชม"
+
+reviews:
+  profile: assertive
+  # QA is the gate that sends work back (D14); CodeRabbit comments, it does not block merges
+  request_changes_workflow: false
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    # draft PR = still with the Dev / QA; review starts when QA marks the PR ready (D14)
+    drafts: false
+    # Git Flow bases: feature → develop · release/* + hotfix/* → main · bugfix → release/*
+    base_branches:
+      - "develop"
+      - "main"
+      - "release/.*"
+    # every push after a CodeRabbit round gets reviewed again (D14 loop)
+    auto_incremental_review: true
+    # default 5 pauses reviews after 5 reviewed commits, which stalls the D14 loop on long PRs (FE-15 / PR #27) — 0 = never pause (BE-55)
+    auto_pause_after_reviewed_commits: 0
+  pre_merge_checks:
+    # types + Decision log carry the "why"; forced JSDoc on every export only adds noise (D34 / BE-54)
+    docstrings:
+      mode: "off"
+  path_filters:
+    - "!pnpm-lock.yaml"
+    - "!**/dist/**"
+  path_instructions:
+    - path: "apps/worker/**"
+      instructions: |
+        Server is authoritative. Clients send inputs only, never state (positions, life, scores, results).
+        Every incoming WebSocket message must be validated with @booberman/protocol parseClientMessage before use.
+        Durable Objects use the WebSocket Hibernation API (ctx.acceptWebSocket), never ws.accept().
+        Player state must be rebuilt from ctx.getWebSockets() + attachments, not kept only in class fields.
+        Do not keep timers running in a Durable Object when the room is empty.
+        Never await D1 writes inside the game tick (Decision log D12).
+        Error responses use protocol error codes, never stack traces.
+    - path: "apps/worker/src/game/**"
+      instructions: |
+        Game logic must be deterministic and pure: no Math.random, Date.now, performance.now, crypto or Workers APIs.
+        Randomness comes from the seeded PRNG stored in state; time comes from state.tick.
+        Do not mutate inputs. Every tunable value belongs in GameConfig.
+    - path: "packages/protocol/**"
+      instructions: |
+        Any breaking change to a message must bump PROTOCOL_VERSION.
+        This package must not import Phaser, DOM or Workers runtime APIs (only zod and its own files).
+        Client→server messages must stay z.strictObject and must never carry positions, life, scores or game results.
+    - path: "apps/client/**"
+      instructions: |
+        Client must never decide game outcomes (death, pickup, win) or send its own position/state to the server.
+        Render server snapshots only; every incoming message goes through parseServerMessage.
+        Must work on a 360px-wide portrait phone and desktop; pixel art must stay crisp (pixelArt: true).
+        Wrap localStorage access in try/catch. Assets only from Kenney (CC0) — Decision log D11.
+    - path: ".claude/**"
+      instructions: |
+        Agent definitions and skills for the Linear graph. Check they stay consistent with CONTRIBUTING.md
+        and do not tell agents to merge PRs, touch Jira outside jira-sync, or put secrets anywhere.
+
+knowledge_base:
+  # issue context for "does this PR do what the ticket says"
+  linear:
+    usage: enabled
+    team_keys:
+      - "BE"
+      - "FE"
+  jira:
+    usage: enabled
+    project_keys:
+      - "CAR"
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/CLAUDE.md"
+      - "CONTRIBUTING.md"
+      - ".claude/skills/**/SKILL.md"

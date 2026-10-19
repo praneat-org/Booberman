@@ -45,6 +45,7 @@ skills:
    - `wont-fix: <เหตุผล> (อ้าง D… / AC ข้อ…)` — ขัดกับ Decision log / AC หรือ CodeRabbit เข้าใจบริบทผิด · ไม่ resolve ปล่อยให้ QA เห็น
    - `deferred: <Linear ID>` — ควรแก้แต่นอก scope → สร้าง sub-issue ใหม่ใต้ parent เดิม status `Backlog`
    - ไม่เห็นด้วยในเรื่อง **security** หรือ **กฎเกม** → อย่าตัดสินเอง: ตอบ `escalated` + ใส่ label `needs-human` แล้วจบรอบ
+   - finding **นอก diff** (อยู่ใน body ของ review ไม่มี thread) → ตอบเป็น PR comment บรรทัดแรกเป็น decision ตามรูปแบบเดียวกัน แล้วอ้าง file:line + ลิงก์ review (BE-55)
 3. ใช้ branch / PR เดิม · commit ขึ้นต้นด้วย Linear ID · ห้าม force-push ทับประวัติ · รัน lint / typecheck / test / build ให้ผ่าน
 4. comment `[BE Dev] ตอบ CodeRabbit รอบ N` เป็นตาราง: # · category · finding · decision · commit / เหตุผล · **เปลี่ยน behavior? (ใช่/ไม่)**
 5. ส่งต่อ:

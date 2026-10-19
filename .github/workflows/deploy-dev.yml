@@ -1,0 +1,73 @@
+# Deploy env `dev` on every push to develop (BE-26 / CAR-3784). PRs are checked by ci.yml, not here.
+# Order matters: build -> D1 migrations -> deploy. The steps are separate and none uses
+# `continue-on-error`, so a failing migration stops the job before `wrangler deploy` runs.
+name: deploy-dev
+
+on:
+  push:
+    branches:
+      - develop
+
+# One deploy at a time. Not cancelled mid-run: killing `d1 migrations apply` or `wrangler deploy` half way is
+# worse than waiting; GitHub keeps only the newest queued run, so a burst of merges still ends on the latest.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # GitHub Environment `dev` (no required reviewers)
+    environment: dev
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # version comes from "packageManager" in package.json
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # builds apps/client first (apps/worker depends on it): wrangler.jsonc serves ../client/dist
+      - run: pnpm build
+
+      - name: Apply D1 migrations (dev)
+        working-directory: apps/worker
+        run: pnpm exec wrangler d1 migrations apply DB --env dev --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy Worker (dev)
+        id: deploy
+        working-directory: apps/worker
+        shell: bash
+        run: |
+          pnpm exec wrangler deploy --env dev 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          url="$(grep -Eo 'https://booberman-dev\.[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | head -n 1 || true)"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Smoke test /api/health
+        shell: bash
+        run: |
+          if [ -z "$URL" ]; then echo "::error::could not find the workers.dev URL in the deploy output"; exit 1; fi
+          echo "dev: $URL" >> "$GITHUB_STEP_SUMMARY"
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 --retry-all-errors "$URL/api/health"
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
