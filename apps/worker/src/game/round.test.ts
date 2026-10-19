@@ -1,4 +1,4 @@
-import { GRID_HEIGHT, GRID_WIDTH } from '@booberman/protocol';
+import { GRID_HEIGHT, GRID_WIDTH, type PlayerRoundStats } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, simulate } from './simulate';
 import { toSnapshot } from './snapshot';
@@ -38,6 +38,20 @@ const due = (x: number, ownerId: PlayerId): Bomb => ({
 });
 const none = new Map<PlayerId, PlayerInput>();
 const roundEnds = (events: { kind: string }[]) => events.filter((e) => e.kind === 'roundEnd');
+/** One row of the `roundEnd` table: every counter 0 unless the test says otherwise. */
+const row = (
+  id: PlayerId,
+  counts: Partial<Omit<PlayerRoundStats, 'id'>> = {},
+): PlayerRoundStats => ({
+  id,
+  kills: 0,
+  deaths: 0,
+  selfKills: 0,
+  curseKills: 0,
+  transfers: 0,
+  trollPoints: 0,
+  ...counts,
+});
 
 describe('win / draw', () => {
   it('one survivor wins (reason lastAlive)', () => {
@@ -45,8 +59,17 @@ describe('win / draw', () => {
     const s = board('#A...B.#', { bombs: [due(4, 'p1')] });
     const { state, events } = simulate(s, none);
     expect(state.players.map((p) => p.alive)).toEqual([true, false]);
-    expect(roundEnds(events)).toMatchObject([
-      { v: 1, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' },
+    // p1's bomb killed p2: 1 kill + 1 troll point (bomb) for p1, 1 death for p2
+    expect(roundEnds(events)).toEqual([
+      {
+        v: 1,
+        t: 'event',
+        kind: 'roundEnd',
+        winner: 'p1',
+        reason: 'lastAlive',
+        stats: [row('p1', { kills: 1, trollPoints: 1 }), row('p2', { deaths: 1 })],
+        titles: [{ title: 'troll', players: ['p1'], value: 1 }],
+      },
     ]);
     expect(state.result).toEqual({ winner: 'p1', reason: 'lastAlive' });
   });
@@ -55,8 +78,23 @@ describe('win / draw', () => {
     const s = board('#A.B..#', { bombs: [due(2, 'p1')] }); // reaches x1..x4: both die
     const { state, events } = simulate(s, none);
     expect(state.players.every((p) => !p.alive)).toBe(true);
-    expect(roundEnds(events)).toMatchObject([
-      { v: 1, t: 'event', kind: 'roundEnd', winner: null, reason: 'allDead' },
+    // p1's own bomb burns both: p1 dies by it (self-kill, 0 points) and takes p2 with it (kill + 1 point)
+    expect(roundEnds(events)).toEqual([
+      {
+        v: 1,
+        t: 'event',
+        kind: 'roundEnd',
+        winner: null,
+        reason: 'allDead',
+        stats: [
+          row('p1', { kills: 1, deaths: 1, selfKills: 1, trollPoints: 1 }),
+          row('p2', { deaths: 1 }),
+        ],
+        titles: [
+          { title: 'selfKiller', players: ['p1'], value: 1 },
+          { title: 'troll', players: ['p1'], value: 1 },
+        ],
+      },
     ]);
     expect(state.result).toEqual({ winner: null, reason: 'allDead' });
   });
@@ -106,8 +144,17 @@ describe('a player leaving mid-round (contested, D32 item 1)', () => {
     expect(state.contested).toBe(true);
     expect(state.result).toBeUndefined();
     const next = simulate(leave(state, 'p2'), none);
-    expect(roundEnds(next.events)).toMatchObject([
-      { v: 1, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' },
+    // p2 left (D33): only p1 is in the table, nobody scored, so no titles
+    expect(roundEnds(next.events)).toEqual([
+      {
+        v: 1,
+        t: 'event',
+        kind: 'roundEnd',
+        winner: 'p1',
+        reason: 'lastAlive',
+        stats: [row('p1')],
+        titles: [],
+      },
     ]);
     expect(next.state.result).toEqual({ winner: 'p1', reason: 'lastAlive' });
   });
@@ -179,8 +226,16 @@ describe('time limit', () => {
 
     const last = simulate(alive2(DEFAULT_CONFIG.roundTicks - 1), none);
     expect(last.state.tick).toBe(DEFAULT_CONFIG.roundTicks);
-    expect(roundEnds(last.events)).toMatchObject([
-      { v: 1, t: 'event', kind: 'roundEnd', winner: null, reason: 'timeout' },
+    expect(roundEnds(last.events)).toEqual([
+      {
+        v: 1,
+        t: 'event',
+        kind: 'roundEnd',
+        winner: null,
+        reason: 'timeout',
+        stats: [row('p1'), row('p2')],
+        titles: [],
+      },
     ]);
     expect(last.state.result).toEqual({ winner: null, reason: 'timeout' });
   });
