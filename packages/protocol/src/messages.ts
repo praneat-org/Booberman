@@ -177,6 +177,9 @@ export const RoundTitle = z.object({
   value: z.number().int().min(1),
 });
 
+export type PlayerRoundStats = z.infer<typeof PlayerRoundStats>;
+export type RoundTitle = z.infer<typeof RoundTitle>;
+
 /**
  * BE-39 / BE-41: the round is over. `winner` is `null` for a draw (always present, never omitted).
  * `stats` = one row per player still in the room, already sorted for the end screen (แต้มเกรียน high

@@ -1,4 +1,12 @@
-import type { ItemKind } from '@booberman/protocol';
+import type { ItemKind, KillCause } from '@booberman/protocol';
+
+/**
+ * แต้มเกรียน (troll points) from the credit table of CAR-3798: what the credited player earns per
+ * kill, by cause, and per curse passed on by contact (`transfer`).
+ */
+export interface TrollPoints extends Readonly<Record<KillCause, number>> {
+  readonly transfer: number;
+}
 
 /**
  * Every tunable number of the game rules lives here (CAR-3795: no balance
@@ -38,6 +46,8 @@ export interface GameConfig {
   readonly curseBlocksBombing: boolean;
   /** Chance a free tile starts as a box (0–1). */
   readonly boxChance: number;
+  /** Points per credited kill and per curse passed on (CAR-3798); a self-kill earns nothing. */
+  readonly trollPoints: TrollPoints;
 }
 
 const WALK_TICKS_PER_TILE = 4;
@@ -58,6 +68,7 @@ export const GAME_CONFIG: GameConfig = {
   curseTransferCooldownTicks: 20,
   curseBlocksBombing: false,
   boxChance: 0.72,
+  trollPoints: { curse: 3, ghost: 3, kick: 2, bomb: 1, self: 0, transfer: 1 },
 };
 
 /** Name used by `simulate`'s default argument (D20). */

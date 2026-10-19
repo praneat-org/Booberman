@@ -37,7 +37,13 @@ describe('a 2-player room plays a round to the end (BE-39)', () => {
 
     const endA = await a.next(roundEnd);
     const endB = await b.next(roundEnd);
-    expect(endA).toEqual({ v, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' });
+    expect(endA).toMatchObject({
+      v,
+      t: 'event',
+      kind: 'roundEnd',
+      winner: 'p1',
+      reason: 'lastAlive',
+    });
     expect(endB).toEqual(endA);
     // sent once, and the snapshots show who died
     await new Promise((r) => setTimeout(r, 200));
@@ -91,7 +97,13 @@ describe('a player leaving mid-round through the real RoomDO (BE-39, D32 item 1)
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     b.close();
     const end = await a.next(roundEnd);
-    expect(end).toEqual({ v, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' });
+    expect(end).toMatchObject({
+      v,
+      t: 'event',
+      kind: 'roundEnd',
+      winner: 'p1',
+      reason: 'lastAlive',
+    });
     await new Promise((r) => setTimeout(r, 200));
     expect(a.received.filter(roundEnd)).toHaveLength(1);
     a.close();

@@ -45,7 +45,7 @@ describe('win / draw', () => {
     const s = board('#A...B.#', { bombs: [due(4, 'p1')] });
     const { state, events } = simulate(s, none);
     expect(state.players.map((p) => p.alive)).toEqual([true, false]);
-    expect(roundEnds(events)).toEqual([
+    expect(roundEnds(events)).toMatchObject([
       { v: 1, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' },
     ]);
     expect(state.result).toEqual({ winner: 'p1', reason: 'lastAlive' });
@@ -55,7 +55,7 @@ describe('win / draw', () => {
     const s = board('#A.B..#', { bombs: [due(2, 'p1')] }); // reaches x1..x4: both die
     const { state, events } = simulate(s, none);
     expect(state.players.every((p) => !p.alive)).toBe(true);
-    expect(roundEnds(events)).toEqual([
+    expect(roundEnds(events)).toMatchObject([
       { v: 1, t: 'event', kind: 'roundEnd', winner: null, reason: 'allDead' },
     ]);
     expect(state.result).toEqual({ winner: null, reason: 'allDead' });
@@ -106,7 +106,7 @@ describe('a player leaving mid-round (contested, D32 item 1)', () => {
     expect(state.contested).toBe(true);
     expect(state.result).toBeUndefined();
     const next = simulate(leave(state, 'p2'), none);
-    expect(roundEnds(next.events)).toEqual([
+    expect(roundEnds(next.events)).toMatchObject([
       { v: 1, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' },
     ]);
     expect(next.state.result).toEqual({ winner: 'p1', reason: 'lastAlive' });
@@ -179,7 +179,7 @@ describe('time limit', () => {
 
     const last = simulate(alive2(DEFAULT_CONFIG.roundTicks - 1), none);
     expect(last.state.tick).toBe(DEFAULT_CONFIG.roundTicks);
-    expect(roundEnds(last.events)).toEqual([
+    expect(roundEnds(last.events)).toMatchObject([
       { v: 1, t: 'event', kind: 'roundEnd', winner: null, reason: 'timeout' },
     ]);
     expect(last.state.result).toEqual({ winner: null, reason: 'timeout' });
