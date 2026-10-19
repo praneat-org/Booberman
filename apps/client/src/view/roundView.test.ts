@@ -60,7 +60,7 @@ describe('RoundView interpolation', () => {
 
   it('welcome and roundStart empty the buffer; lower ticks of the next round are accepted', () => {
     for (const reset of [
-      (r: RoundView) => applyWelcome({ grid: exampleGrid() }, r),
+      (r: RoundView) => applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, r, 'me'),
       (r: RoundView) => applyBoardEvent(exampleServerMessages.roundStart, r),
     ]) {
       const r = new RoundView(0);
@@ -93,7 +93,7 @@ describe('RoundView interpolation', () => {
     expect(a.roster.nameOf('p1')).toBe('mint');
     const b = new RoundView(0);
     fill(b);
-    applyWelcome({ grid: exampleGrid() }, b);
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, b, 'me');
     expect(b.buffer.size).toBe(0);
     expect(b.latest).toBeUndefined();
     expect(b.roster.nameOf('p1')).toBeUndefined();
