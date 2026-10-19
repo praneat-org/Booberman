@@ -1,6 +1,6 @@
-import { RoomId } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
-import { joinFromLocation, roomIdFromPath, roomPath } from './joinTarget';
+import { resolveEntry } from './entryRoute';
+import { roomIdFromPath, roomPath, roomShareUrl } from './joinTarget';
 
 describe('roomIdFromPath', () => {
   it('accepts /room/<valid id>, with optional slash and any case', () => {
@@ -27,30 +27,19 @@ describe('roomIdFromPath', () => {
     expect(roomIdFromPath(roomPath('xyz789'))).toBe('xyz789');
     expect(roomPath('xyz789')).toBe('/room/xyz789');
   });
-  it('roomPath with a nickname round-trips through joinFromLocation without any storage', () => {
+  it('roomPath with a nickname round-trips through resolveEntry without any storage', () => {
     for (const nick of ['มิ้นท์', 'Mint_01', 'Bo']) {
       const url = new URL(roomPath('xyz789', nick), 'http://x');
-      expect(joinFromLocation(url, '')).toEqual({ roomId: 'xyz789', nickname: nick });
+      expect(resolveEntry(url, '')).toEqual({ kind: 'join', roomId: 'xyz789', nickname: nick });
     }
   });
 });
 
-describe('joinFromLocation', () => {
-  const at = (pathname: string, search = '') => ({ pathname, search });
-  it('uses path room and the remembered nickname', () => {
-    expect(joinFromLocation(at('/room/abc123'), 'มิ้นท์')).toEqual({
-      roomId: 'abc123',
-      nickname: 'มิ้นท์',
-    });
-  });
-  it('?nick wins over stored; invalid ?nick falls back', () => {
-    expect(joinFromLocation(at('/room/abc123', '?nick=Bo'), 'Mint').nickname).toBe('Bo');
-    expect(joinFromLocation(at('/room/abc123', '?nick=a b'), 'Mint').nickname).toBe('Mint');
-  });
-  it('?room works off the room path and falls back to a valid default', () => {
-    expect(joinFromLocation(at('/', '?room=zzz999'), 'a').roomId).toBe('zzz999');
-    const j = joinFromLocation(at('/', '?room=!!'), '', () => 0.5);
-    expect(RoomId.safeParse(j.roomId).success).toBe(true);
-    expect(j.nickname).toBe('Player55');
+describe('roomShareUrl', () => {
+  it('is origin + /room/<id> with no query, so no nickname leaks into a shared link', () => {
+    expect(roomShareUrl('http://localhost:5173', 'abc123')).toBe(
+      'http://localhost:5173/room/abc123',
+    );
+    expect(roomShareUrl('https://booberman.example', 'xyz789')).not.toContain('?');
   });
 });

@@ -1,7 +1,7 @@
 import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
-import { joinFromLocation } from '../lobby/joinTarget';
-import { createTransport } from '../net/createTransport';
+import { createTransport, joinFromSearch, transportKind } from '../net/createTransport';
+import { type JoinFailureKind, JoinWatcher } from '../net/joinWatcher';
 import type { Unsubscribe } from '../net/Transport';
 import { CurseFrames } from '../ui/CurseFrames';
 import { attachDebugOverlay } from '../ui/DebugOverlay';
@@ -13,12 +13,19 @@ import { BOARD_HEIGHT_PX, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, TILE_SIZE } from '../v
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
 import { type Drawable, RoundView } from '../view/roundView';
 import { AssetKey, SceneKey } from './keys';
+import type { LobbySceneData } from './LobbyScene';
 
 /** Draw order, back to front. */
 const Depth = { Box: 1, Item: 2, Bomb: 3, Flame: 4, Player: 10, Marker: 11, Curse: 12 } as const;
 const MARKER_OFFSET = { x: (TILE_SIZE - 8) / 2, y: -7 };
 
 type Sprite = Phaser.GameObjects.Sprite;
+
+/** Who joins which room; the lobby passes it in `scene.start(Game, ...)`. Absent with `?mock=1`. */
+export interface GameSceneData {
+  roomId?: string;
+  nickname?: string;
+}
 
 /**
  * Draws the arena from what the server says: walls from the tilemap, boxes from `grid` +
@@ -39,9 +46,14 @@ export class GameScene extends Phaser.Scene {
   private tracker = new DirectionTracker();
   private sender: InputSender | undefined;
   private bombPressed = false;
+  private target: GameSceneData = {};
 
   constructor() {
     super(SceneKey.Game);
+  }
+
+  init(data?: GameSceneData): void {
+    this.target = data ?? {};
   }
 
   create(): void {
@@ -68,7 +80,12 @@ export class GameScene extends Phaser.Scene {
       .setDepth(Depth.Marker)
       .setVisible(false);
 
-    const transport = createTransport(window.location.search, joinFromLocation(window.location));
+    const { roomId, nickname } = this.target;
+    const join =
+      roomId !== undefined && nickname !== undefined
+        ? { roomId, nickname }
+        : joinFromSearch(window.location.search);
+    const transport = createTransport(window.location.search, join);
     if (!transport) {
       this.add
         .text(
@@ -107,6 +124,7 @@ export class GameScene extends Phaser.Scene {
       transport.onError((code, message) => console.warn('[transport] error', code, message)),
     ];
     this.sender = new InputSender((input) => transport.send(input));
+    cleanups.push(...this.watchJoin(transport, join));
     cleanups.push(...this.bindKeyboard());
     if (debugEnabled(window.location.search)) {
       cleanups.push(
@@ -149,6 +167,27 @@ export class GameScene extends Phaser.Scene {
     this.drawItems(d.items);
     this.drawPlayers(d.players);
     this.curseFrames?.sync(toCurseFrames(d.players, this.round.latest?.tick ?? 0));
+  }
+
+  /**
+   * The real server only: turn "did the join work?" into a trip back to the lobby with the reason
+   * when it did not. `?mock=1` has no room.
+   */
+  private watchJoin(
+    transport: NonNullable<ReturnType<typeof createTransport>>,
+    join: { roomId: string; nickname: string },
+  ): Unsubscribe[] {
+    if (transportKind(window.location.search) !== 'ws') return [];
+    const leave = (kind: JoinFailureKind) => {
+      const failure = { kind, roomId: join.roomId, nickname: join.nickname };
+      this.scene.start(SceneKey.Lobby, { failure } satisfies LobbySceneData);
+    };
+    const watcher = new JoinWatcher(transport, {
+      onJoined: () => {},
+      onFailed: leave,
+      onLost: () => leave('CONNECTION_LOST'),
+    });
+    return [() => watcher.dispose()];
   }
 
   /**

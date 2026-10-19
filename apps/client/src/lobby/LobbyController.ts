@@ -37,6 +37,11 @@ export interface LobbyDeps {
   fetchFn?: typeof fetch;
   storage?: NicknameStorage;
   navigate: (path: string) => void;
+  /**
+   * Enter a room without leaving the page (the `/room/:id` screens, which already run inside the
+   * game). When absent, entering navigates to `/room/<id>?nick=...` (the home page).
+   */
+  enter?: (roomId: string, nickname: string) => void;
   timers?: LobbyTimers;
 }
 
@@ -55,6 +60,7 @@ export class LobbyController {
   private readonly fetchFn: typeof fetch | undefined;
   private readonly storage: NicknameStorage | undefined;
   private readonly navigate: (path: string) => void;
+  private readonly enter: ((roomId: string, nickname: string) => void) | undefined;
   private readonly timers: LobbyTimers;
   private destroyed = false;
   private started = false;
@@ -69,6 +75,7 @@ export class LobbyController {
     this.fetchFn = deps.fetchFn;
     this.storage = deps.storage;
     this.navigate = deps.navigate;
+    this.enter = deps.enter;
     this.timers = deps.timers ?? realTimers;
     this.current = {
       nickname: deps.storage === undefined ? loadNickname() : loadNickname(deps.storage),
@@ -172,6 +179,10 @@ export class LobbyController {
   private go(roomId: string, nickname: string): void {
     saveNickname(nickname, this.storage);
     this.patch({ creating: false, navigating: true, createError: null });
+    if (this.enter) {
+      this.enter(roomId, nickname);
+      return;
+    }
     // the nickname rides in the URL: localStorage may be blocked, so it cannot be the only carrier
     this.navigate(roomPath(roomId, nickname));
   }
