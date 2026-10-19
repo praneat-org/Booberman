@@ -29,7 +29,7 @@ export interface MockTransportOptions {
   /** Extra random one-way delay 0..jitterMs (order is kept, like a WebSocket). */
   jitterMs?: number;
   tickMs?: number;
-  nickname?: string;
+  /** Whole-ms clock for the delay maths (tests drive it); defaults to `Date.now`. */
   clock?: () => number;
 }
 
@@ -74,7 +74,11 @@ export function createRng(seed: number): () => number {
 
 interface MockPlayer {
   id: PlayerId;
-  nickname: string;
+  /**
+   * Announced to us with `playerJoined`. Only the bots have one: like the real server (D17), the
+   * mock never echoes our own join back, so the client must already know the name it joined with.
+   */
+  nickname?: string;
   x: number;
   y: number;
   /** Held direction (D27: remembered until `none`). */
@@ -93,6 +97,39 @@ interface MockBomb {
   fuse: number;
   owner: PlayerId;
 }
+
+/**
+ * One direction of the fake network: a FIFO of messages with the time each is due. Only the head
+ * has a timer, so delivery order is the order of `afterDelay` calls whatever the timers do (the
+ * browser truncates delays to whole ms, so two timers set a millisecond apart can swap).
+ */
+interface DelayLine {
+  items: { at: number; fn: () => void }[];
+  timer: ReturnType<typeof setTimeout> | undefined;
+  /** True while `deliverDue` runs, so a message queued from a callback cannot start a second timer. */
+  delivering: boolean;
+  /** Due time of the last message queued; the next one is never earlier. */
+  lastAt: number;
+}
+
+const newDelayLine = (): DelayLine => ({
+  items: [],
+  timer: undefined,
+  delivering: false,
+  lastAt: 0,
+});
+
+/**
+ * Forgets everything the line holds for the session that ends: the queued messages, their timer and
+ * the due time of the last one (else the next session's first message would wait for the old
+ * session's slowest). `delivering` is left alone, `deliverDue` owns it.
+ */
+const clearDelayLine = (line: DelayLine): void => {
+  if (line.timer !== undefined) clearTimeout(line.timer);
+  line.timer = undefined;
+  line.items = [];
+  line.lastAt = 0;
+};
 
 type Listeners = {
   welcome: Set<(m: WelcomeMessage) => void>;
@@ -130,15 +167,14 @@ export class MockTransport implements Transport {
     error: new Set(),
     close: new Set(),
   };
-  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  /** `in` = client→server, `out` = server→client. */
+  private readonly lines = { in: newDelayLine(), out: newDelayLine() };
   private readonly opts: Required<Omit<MockTransportOptions, 'clock'>>;
   private readonly clock: () => number;
   private readonly jitterRng: () => number;
   private interval: ReturnType<typeof setInterval> | undefined;
   private tick = 0;
   private ackSeq = 0;
-  private lastOutAt = 0;
-  private lastInAt = 0;
 
   constructor(options: MockTransportOptions = {}) {
     this.opts = {
@@ -147,13 +183,12 @@ export class MockTransport implements Transport {
       latencyMs: Math.max(0, options.latencyMs ?? 0),
       jitterMs: Math.max(0, options.jitterMs ?? 0),
       tickMs: options.tickMs ?? 50,
-      nickname: options.nickname ?? 'you',
     };
     this.clock = options.clock ?? Date.now;
     this.jitterRng = createRng(this.opts.seed ^ 0x9e3779b9);
     this.ruleRng = createRng(this.opts.seed ^ 0xb0b);
     this.players = [
-      this.makePlayer(SELF_ID, this.opts.nickname),
+      this.makePlayer(SELF_ID),
       ...BOT_IDS.slice(0, this.opts.bots).map((id, i) =>
         this.makePlayer(id, `bot${i + 1}`, createRng(this.opts.seed + i + 1)),
       ),
@@ -191,6 +226,7 @@ export class MockTransport implements Transport {
       grid: this.grid,
     });
     for (const p of this.players) {
+      if (p.nickname === undefined) continue;
       this.toClient({
         v: PROTOCOL_VERSION,
         t: 'event',
@@ -205,8 +241,7 @@ export class MockTransport implements Transport {
   disconnect(): void {
     if (this.interval !== undefined) clearInterval(this.interval);
     this.interval = undefined;
-    for (const t of this.timers) clearTimeout(t);
-    this.timers.clear();
+    for (const line of Object.values(this.lines)) clearDelayLine(line);
   }
 
   send(input: TransportInput): void {
@@ -382,7 +417,7 @@ export class MockTransport implements Transport {
     });
   }
 
-  private makePlayer(id: PlayerId, nickname: string, bot?: () => number): MockPlayer {
+  private makePlayer(id: PlayerId, nickname?: string, bot?: () => number): MockPlayer {
     const spawn = SPAWNS[id] ?? { x: 1, y: 1 };
     return {
       id,
@@ -409,25 +444,50 @@ export class MockTransport implements Transport {
     if (Number.isInteger(p.x) && Number.isInteger(p.y)) p.walkDir = undefined;
   }
 
-  /** `in` = client→server, `out` = server→client. Each direction keeps its order. */
+  /**
+   * Runs `fn` after the simulated latency + jitter. Each direction is a FIFO (`DelayLine`), like one
+   * WebSocket: a message is never delivered before an earlier one, so `welcome` always comes first.
+   */
   private afterDelay(dir: 'in' | 'out', fn: () => void): void {
     const { latencyMs, jitterMs } = this.opts;
     if (latencyMs === 0 && jitterMs === 0) {
       fn();
       return;
     }
-    const now = this.clock();
-    const at = Math.max(
-      now + latencyMs + this.jitterRng() * jitterMs,
-      dir === 'in' ? this.lastInAt : this.lastOutAt,
+    const line = this.lines[dir];
+    const at = Math.max(this.clock() + latencyMs + this.jitterRng() * jitterMs, line.lastAt);
+    line.lastAt = at;
+    line.items.push({ at, fn });
+    this.arm(line);
+  }
+
+  /** Timer for the head of the line only; it fires, delivers, and arms the next one. */
+  private arm(line: DelayLine): void {
+    const head = line.items[0];
+    if (line.delivering || line.timer !== undefined || !head) return;
+    line.timer = setTimeout(
+      () => {
+        line.timer = undefined;
+        this.deliverDue(line);
+      },
+      Math.max(0, head.at - this.clock()),
     );
-    if (dir === 'in') this.lastInAt = at;
-    else this.lastOutAt = at;
-    const timer = setTimeout(() => {
-      this.timers.delete(timer);
-      fn();
-    }, at - now);
-    this.timers.add(timer);
+  }
+
+  /** The head (its timer fired) and whatever else is already due go out now, in order. */
+  private deliverDue(line: DelayLine): void {
+    line.delivering = true;
+    try {
+      let item = line.items.shift();
+      while (item) {
+        item.fn();
+        const next = line.items[0];
+        item = next && next.at <= this.clock() ? line.items.shift() : undefined;
+      }
+    } finally {
+      line.delivering = false;
+      this.arm(line);
+    }
   }
 
   private toClient(raw: unknown): void {

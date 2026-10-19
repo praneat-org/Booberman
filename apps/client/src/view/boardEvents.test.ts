@@ -6,6 +6,7 @@ import {
 } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
 import { applyBoardEvent, applyWelcome } from './boardEvents';
+import { toHudView } from './hudView';
 import { RoundView } from './roundView';
 
 type Snapshot = Extract<ServerMessage, { t: 'snapshot' }>;
@@ -84,7 +85,7 @@ describe('board events and the round view', () => {
   it('welcome (also a new board) resets everything too', () => {
     const round = new RoundView(0);
     feed(round, busy(1, [p(5, 5)]));
-    applyWelcome({ grid: exampleGrid() }, round);
+    applyWelcome({ grid: exampleGrid(), playerId: 'p1' }, round, 'Hi');
     expect(round.latest).toBeUndefined();
     expect(round.drawable('p1').players).toHaveLength(0);
     feed(round, busy(2, [p(1, 1)]));
@@ -110,8 +111,47 @@ describe('roster (HUD nicknames)', () => {
     applyBoardEvent(joined('p1', 'a'), round);
     applyBoardEvent(exampleServerMessages.roundStart, round);
     expect(round.roster.nameOf('p1')).toBe('a');
-    applyWelcome({ grid: exampleGrid() }, round);
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'me');
     expect(round.roster.nameOf('p1')).toBeUndefined();
+  });
+
+  // FE-29 cause 1: the server never sends us our own playerJoined and `welcome` has no nickname,
+  // so the only place our name can come from is the one we joined with.
+  it('welcome puts our own nickname in the roster, under the id the server gave us', () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'มิ้นท์');
+    expect(round.roster.nameOf('p2')).toBe('มิ้นท์');
+    expect(round.roster.nameOf('p1')).toBeUndefined();
+  });
+
+  it('welcome still replaces the roster of the old connection; only our own name is set', () => {
+    const round = newRound();
+    applyBoardEvent(joined('p1', 'old'), round);
+    applyBoardEvent(joined('p2', 'gone'), round);
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'Hi');
+    expect(round.roster.nameOf('p1')).toBeUndefined();
+    expect(round.roster.nameOf('p2')).toBe('Hi');
+  });
+
+  it('joins replayed after welcome add the others next to our own name, roundStart keeps both', () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'Hi');
+    applyBoardEvent(joined('p1', 'Bob_2'), round);
+    applyBoardEvent(exampleServerMessages.roundStart, round);
+    expect(round.roster.nameOf('p1')).toBe('Bob_2');
+    expect(round.roster.nameOf('p2')).toBe('Hi');
+  });
+
+  it('the HUD card of ourselves shows the nickname, not the id', () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'Hi');
+    applyBoardEvent(joined('p1', 'Bob_2'), round);
+    feed(round, busy(1, [p(1, 1), { ...p(11, 1), id: 'p2' }]));
+    const cards = toHudView(round.latest, round.roster, 'p2').cards;
+    expect(cards.map((c) => [c.id, c.name, c.isSelf])).toEqual([
+      ['p1', 'Bob_2', false],
+      ['p2', 'Hi', true],
+    ]);
   });
 
   it('roundStart drops the old snapshot, so the HUD shows no stale cards or time', () => {

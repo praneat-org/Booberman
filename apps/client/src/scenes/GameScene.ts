@@ -73,7 +73,8 @@ export class GameScene extends Phaser.Scene {
       .setDepth(Depth.Marker)
       .setVisible(false);
 
-    const transport = createTransport(window.location.search, joinFromLocation(window.location));
+    const join = joinFromLocation(window.location);
+    const transport = createTransport(window.location.search, join);
     if (!transport) {
       this.add
         .text(
@@ -102,7 +103,8 @@ export class GameScene extends Phaser.Scene {
     const cleanups: Unsubscribe[] = [
       transport.onWelcome((msg) => {
         this.selfId = msg.playerId;
-        applyWelcome(msg, this.round);
+        // the server never announces us to ourselves: our card's name is the one we joined with
+        applyWelcome(msg, this.round, join.nickname);
         this.destroyRoundSprites();
       }),
       transport.onSnapshot((msg) => this.round.applySnapshot(msg, performance.now())),
