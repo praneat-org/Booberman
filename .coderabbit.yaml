@@ -19,6 +19,8 @@ reviews:
       - "release/.*"
     # every push after a CodeRabbit round gets reviewed again (D14 loop)
     auto_incremental_review: true
+    # default 5 pauses reviews after 5 reviewed commits, which stalls the D14 loop on long PRs (FE-15 / PR #27) — 0 = never pause (BE-55)
+    auto_pause_after_reviewed_commits: 0
   pre_merge_checks:
     # types + Decision log carry the "why"; forced JSDoc on every export only adds noise (D34 / BE-54)
     docstrings:

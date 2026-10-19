@@ -1,5 +1,6 @@
 export { createBoard, isWalkable, SPAWNS } from './board';
 export { DEFAULT_CONFIG, GAME_CONFIG } from './config';
+export { curseSourceOf, effectiveDir, stepCurses } from './curse';
 export { nextRandom } from './prng';
 export { checkRoundEnd } from './round';
 export { simulate } from './simulate';

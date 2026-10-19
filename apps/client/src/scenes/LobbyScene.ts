@@ -1,7 +1,7 @@
 import { PROTOCOL_VERSION } from '@booberman/protocol';
 import Phaser from 'phaser';
 import { appTitle } from '../title';
-import { BOARD_HEIGHT_PX, BOARD_WIDTH_PX } from '../view/layout';
+import { CANVAS_HEIGHT_PX, CANVAS_WIDTH_PX } from '../view/layout';
 import { SceneKey } from './keys';
 
 /** Placeholder — the real lobby (nickname, rooms) is CAR-3792. */
@@ -11,8 +11,8 @@ export class LobbyScene extends Phaser.Scene {
   }
 
   create(): void {
-    const cx = BOARD_WIDTH_PX / 2;
-    const cy = BOARD_HEIGHT_PX / 2;
+    const cx = CANVAS_WIDTH_PX / 2;
+    const cy = CANVAS_HEIGHT_PX / 2;
     const style = { fontFamily: 'monospace', color: '#ffffff' };
     this.add
       .text(cx, cy - 16, appTitle(PROTOCOL_VERSION), { ...style, fontSize: '12px' })

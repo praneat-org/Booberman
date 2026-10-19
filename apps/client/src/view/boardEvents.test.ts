@@ -91,3 +91,34 @@ describe('board events and the round view', () => {
     expect(round.playerAnims.get('p1')?.moving).toBe(false);
   });
 });
+
+describe('roster (HUD nicknames)', () => {
+  const joined = (id: 'p1' | 'p2', nickname: string) =>
+    ({ ...exampleServerMessages.playerJoined, playerId: id, nickname }) as const;
+
+  it('joins and leaves update the roster without touching the board', () => {
+    const round = newRound();
+    expect(applyBoardEvent(joined('p1', 'a'), round)).toBe(false);
+    applyBoardEvent(joined('p2', 'b'), round);
+    applyBoardEvent({ ...exampleServerMessages.playerLeft, playerId: 'p2' }, round);
+    expect(round.roster.nameOf('p1')).toBe('a');
+    expect(round.roster.nameOf('p2')).toBeUndefined();
+  });
+
+  it('roundStart keeps the room (no joins are replayed), welcome starts a fresh roster', () => {
+    const round = newRound();
+    applyBoardEvent(joined('p1', 'a'), round);
+    applyBoardEvent(exampleServerMessages.roundStart, round);
+    expect(round.roster.nameOf('p1')).toBe('a');
+    applyWelcome({ grid: exampleGrid() }, round);
+    expect(round.roster.nameOf('p1')).toBeUndefined();
+  });
+
+  it('roundStart drops the old snapshot, so the HUD shows no stale cards or time', () => {
+    const round = newRound();
+    feed(round, busy(100, [p(1, 1)]));
+    expect(round.latest).toBeDefined();
+    applyBoardEvent(exampleServerMessages.roundStart, round);
+    expect(round.latest).toBeUndefined();
+  });
+});

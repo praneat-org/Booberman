@@ -80,7 +80,11 @@ export const PlayerState = z.object({
   x: PosX,
   y: PosY,
   alive: z.boolean(),
-  /** Ticks of "reverse controls" curse left; 0 = not cursed. */
+  /**
+   * Ticks of "reverse controls" curse left (BE-40); 0 = not cursed (always 0 for a dead player).
+   * The server reverses the directions; the client only shows it. Counts down 1 per tick from 160
+   * (8 s); a transfer by contact keeps what was left or at least 80. Shape unchanged: no version bump.
+   */
   curse: z.number().int().min(0),
   /** Place immediately instead of interpolating (e.g. became a ghost). */
   teleport: z.boolean(),

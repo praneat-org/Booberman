@@ -2,6 +2,7 @@ import type { PlayerId } from '@booberman/protocol';
 import type { SnapshotMessage } from '../net/Transport';
 import { BoxField } from './boardView';
 import { toBombViews, toFlameViews, toItemViews } from './entityViews';
+import { Roster } from './hudView';
 import { type PlayerAnim, PlayerAnimTracker } from './playerAnim';
 import { type PlayerView, toPlayerViews } from './playerViews';
 import { DEFAULT_INTERPOLATION_DELAY_MS, SnapshotBuffer } from './snapshotBuffer';
@@ -24,6 +25,8 @@ export class RoundView {
   readonly boxes = new BoxField();
   readonly animTracker = new PlayerAnimTracker();
   readonly buffer: SnapshotBuffer;
+  /** Nicknames for the HUD. Per connection, not per round: only `resetSession` clears it. */
+  readonly roster = new Roster();
   /** What is being drawn: the buffered snapshot at the render time, players interpolated. */
   latest: SnapshotMessage | undefined;
   playerAnims: Map<string, PlayerAnim> = new Map();
@@ -40,6 +43,12 @@ export class RoundView {
     this.latest = undefined;
     this.renderTick = undefined;
     this.playerAnims = new Map();
+  }
+
+  /** `welcome`: a new connection, so the roster starts empty too (joins are replayed after it). */
+  resetSession(grid?: string): void {
+    this.roster.clear();
+    this.reset(grid);
   }
 
   /** `recvAt`: local clock (ms) when the snapshot arrived; same clock as `frame`. */

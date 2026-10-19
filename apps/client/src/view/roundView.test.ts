@@ -2,6 +2,7 @@ import { exampleGrid, exampleServerMessages, type PlayerState } from '@booberman
 import { describe, expect, it } from 'vitest';
 import type { SnapshotMessage } from '../net/Transport';
 import { applyBoardEvent, applyWelcome } from './boardEvents';
+import { toHudView } from './hudView';
 import { RoundView } from './roundView';
 
 const pl = (x: number, teleport = false): PlayerState => ({
@@ -75,5 +76,39 @@ describe('RoundView interpolation', () => {
       r.frame(50);
       expect(r.drawable('p1').players[0]?.view.px).toBe(7 * 16);
     }
+  });
+
+  it('welcome clears buffer AND roster; roundStart clears the buffer but keeps the roster', () => {
+    const fill = (r: RoundView) => {
+      r.roster.join('p1', 'mint');
+      send(r, 100, pl(1));
+      send(r, 101, pl(1.1));
+      r.frame(5050);
+    };
+    const a = new RoundView(0);
+    fill(a);
+    applyBoardEvent(exampleServerMessages.roundStart, a);
+    expect(a.buffer.size).toBe(0);
+    expect(a.latest).toBeUndefined();
+    expect(a.roster.nameOf('p1')).toBe('mint');
+    const b = new RoundView(0);
+    fill(b);
+    applyWelcome({ grid: exampleGrid() }, b);
+    expect(b.buffer.size).toBe(0);
+    expect(b.latest).toBeUndefined();
+    expect(b.roster.nameOf('p1')).toBeUndefined();
+  });
+
+  it('the HUD reads the interpolated sample: curse and alive flow through, nothing before the first frame', () => {
+    const r = new RoundView(0);
+    r.roster.join('p1', 'mint');
+    expect(toHudView(r.latest, r.roster, 'p1').cards).toHaveLength(0);
+    send(r, 10, { ...pl(1), curse: 40 });
+    send(r, 11, { ...pl(1.1), curse: 40 });
+    r.frame(525);
+    const card = toHudView(r.latest, r.roster, 'p1').cards[0];
+    expect(card?.status).toBe('cursed');
+    expect(card?.curseSeconds).toBe(2);
+    expect(card?.name).toBe('mint');
   });
 });
