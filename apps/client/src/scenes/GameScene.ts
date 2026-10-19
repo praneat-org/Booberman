@@ -4,8 +4,10 @@ import { joinFromLocation } from '../lobby/joinTarget';
 import { createTransport } from '../net/createTransport';
 import type { Unsubscribe } from '../net/Transport';
 import { CurseFrames } from '../ui/CurseFrames';
+import { attachDebugOverlay } from '../ui/DebugOverlay';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
 import { toCurseFrames } from '../view/curseFrames';
+import { debugEnabled } from '../view/debugStats';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
 import { BOARD_HEIGHT_PX, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
@@ -98,7 +100,7 @@ export class GameScene extends Phaser.Scene {
         applyWelcome(msg, this.round);
         this.destroyRoundSprites();
       }),
-      transport.onSnapshot((msg) => this.round.applySnapshot(msg)),
+      transport.onSnapshot((msg) => this.round.applySnapshot(msg, performance.now())),
       transport.onEvent((msg) => {
         if (applyBoardEvent(msg, this.round)) this.destroyRoundSprites();
       }),
@@ -106,6 +108,15 @@ export class GameScene extends Phaser.Scene {
     ];
     this.sender = new InputSender((input) => transport.send(input));
     cleanups.push(...this.bindKeyboard());
+    if (debugEnabled(window.location.search)) {
+      cleanups.push(
+        attachDebugOverlay(transport, () => ({
+          buffered: this.round.buffer.size,
+          latestTick: this.round.buffer.latestTick,
+          renderTick: this.round.renderTick,
+        })),
+      );
+    }
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.scene.stop(SceneKey.Hud);
@@ -130,6 +141,7 @@ export class GameScene extends Phaser.Scene {
   override update(): void {
     this.sender?.update(this.tracker.current(), this.bombPressed);
     this.bombPressed = false;
+    this.round.frame(performance.now());
     this.drawBoxes();
     const d = this.round.drawable(this.selfId);
     this.drawBombs(d.bombs);
