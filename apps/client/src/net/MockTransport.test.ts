@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe('MockTransport', () => {
-  it('emits welcome, playerJoined for everyone, then snapshots; all pass parseServerMessage', () => {
+  it('emits welcome, playerJoined for the bots, then snapshots; all pass parseServerMessage', () => {
     const t = new MockTransport({ bots: 3 });
     const got = collect(t);
     t.connect();
@@ -41,13 +41,28 @@ describe('MockTransport', () => {
     t.disconnect();
 
     expect(got.welcome).toHaveLength(1);
-    expect(got.events).toHaveLength(4);
+    expect(got.events).toHaveLength(3);
     expect(got.snaps).toHaveLength(40);
     for (const msg of got.raw) {
       const r = parseServerMessage(JSON.parse(JSON.stringify(msg)));
       expect(r.ok).toBe(true);
     }
     expect(got.snaps[0]?.players.map((p) => p.id)).toEqual(['p1', 'p2', 'p3', 'p4']);
+  });
+
+  it('does not announce our own join back to us, like the real server (D17)', () => {
+    const t = new MockTransport({ bots: 3 });
+    const got = collect(t);
+    t.connect();
+    t.disconnect();
+    expect(got.welcome[0]).toMatchObject({ playerId: 'p1' });
+    expect(
+      got.events.map((e) => e as { kind?: string; playerId?: string; nickname?: string }),
+    ).toEqual([
+      { v: PROTOCOL_VERSION, t: 'event', kind: 'playerJoined', playerId: 'p2', nickname: 'bot1' },
+      { v: PROTOCOL_VERSION, t: 'event', kind: 'playerJoined', playerId: 'p3', nickname: 'bot2' },
+      { v: PROTOCOL_VERSION, t: 'event', kind: 'playerJoined', playerId: 'p4', nickname: 'bot3' },
+    ]);
   });
 
   it('clamps bot count to 1..3', () => {
@@ -172,6 +187,90 @@ describe('MockTransport', () => {
     expect(ticks).toEqual([...ticks].sort((a, b) => a - b));
     expect(ticks).toHaveLength(30);
     t.disconnect();
+  });
+
+  describe('session start order (FE-29)', () => {
+    /** What `collect` saw, as short labels in arrival order. */
+    const labels = (raw: unknown[]) =>
+      raw.map((m) => {
+        const msg = m as { t: string; kind?: string; playerId?: string; tick?: number };
+        if (msg.t === 'welcome') return 'welcome';
+        if (msg.t === 'event') return `${msg.kind}:${msg.playerId}`;
+        return `${msg.t}:${msg.tick}`;
+      });
+
+    it('delivers welcome before every playerJoined and snapshot, with latency 150 / jitter 50', () => {
+      // `setTimeout` truncates to whole ms and the clock is whole ms, so two messages scheduled in
+      // neighbouring milliseconds can fire in swapped order. A clock that runs ahead of the timers
+      // makes that happen every time instead of 4 runs in 30.
+      for (let seed = 1; seed <= 30; seed++) {
+        vi.useFakeTimers();
+        let skew = 0;
+        const t = new MockTransport({
+          bots: 3,
+          seed,
+          latencyMs: 150,
+          jitterMs: 50,
+          clock: () => Date.now() + skew++,
+        });
+        const got = collect(t);
+        t.connect();
+        vi.advanceTimersByTime(400); // the first 4 ticks run on the real interval
+        t.disconnect();
+        vi.useRealTimers();
+
+        const order = labels(got.raw);
+        const firstSnapshot = order.findIndex((l) => l.startsWith('snapshot:'));
+        expect(firstSnapshot, `seed ${seed}: got snapshots`).toBeGreaterThan(0);
+        expect(order[0], `seed ${seed}`).toBe('welcome');
+        const joins = order.slice(1, firstSnapshot);
+        expect(
+          joins.every((l) => l.startsWith('playerJoined:')),
+          `seed ${seed}`,
+        ).toBe(true);
+        expect(joins, `seed ${seed}`).toEqual(
+          expect.arrayContaining(['playerJoined:p2', 'playerJoined:p3', 'playerJoined:p4']),
+        );
+        expect(
+          order.slice(firstSnapshot).every((l) => l.startsWith('snapshot:')),
+          `seed ${seed}`,
+        ).toBe(true);
+      }
+    });
+
+    it('keeps the order of everything else too: snapshots by tick, events where they were sent', () => {
+      vi.useFakeTimers();
+      let skew = 0;
+      const t = new MockTransport({
+        bots: 3,
+        seed: 4,
+        latencyMs: 150,
+        jitterMs: 50,
+        clock: () => Date.now() + skew++,
+      });
+      const got = collect(t);
+      t.connect();
+      for (let i = 0; i < 60; i++) t.step();
+      vi.advanceTimersByTime(1000);
+      const ticks = got.snaps.map((s) => s.tick);
+      expect(ticks).toEqual([...ticks].sort((a, b) => a - b));
+      expect(labels(got.raw)[0]).toBe('welcome');
+      t.disconnect();
+    });
+
+    it('drops what is still in flight on disconnect and starts the next session with welcome again', () => {
+      vi.useFakeTimers();
+      const t = new MockTransport({ bots: 1, latencyMs: 100, jitterMs: 40 });
+      const got = collect(t);
+      t.connect();
+      t.disconnect();
+      vi.advanceTimersByTime(1000);
+      expect(got.raw).toEqual([]);
+      t.connect();
+      vi.advanceTimersByTime(1000);
+      expect(labels(got.raw)[0]).toBe('welcome');
+      t.disconnect();
+    });
   });
 
   it('unsubscribe stops callbacks', () => {
