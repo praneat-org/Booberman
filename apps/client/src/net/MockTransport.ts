@@ -119,6 +119,18 @@ const newDelayLine = (): DelayLine => ({
   lastAt: 0,
 });
 
+/**
+ * Forgets everything the line holds for the session that ends: the queued messages, their timer and
+ * the due time of the last one (else the next session's first message would wait for the old
+ * session's slowest). `delivering` is left alone, `deliverDue` owns it.
+ */
+const clearDelayLine = (line: DelayLine): void => {
+  if (line.timer !== undefined) clearTimeout(line.timer);
+  line.timer = undefined;
+  line.items = [];
+  line.lastAt = 0;
+};
+
 type Listeners = {
   welcome: Set<(m: WelcomeMessage) => void>;
   snapshot: Set<(m: SnapshotMessage) => void>;
@@ -225,11 +237,7 @@ export class MockTransport implements Transport {
   disconnect(): void {
     if (this.interval !== undefined) clearInterval(this.interval);
     this.interval = undefined;
-    for (const line of Object.values(this.lines)) {
-      if (line.timer !== undefined) clearTimeout(line.timer);
-      line.timer = undefined;
-      line.items = [];
-    }
+    for (const line of Object.values(this.lines)) clearDelayLine(line);
   }
 
   send(input: TransportInput): void {

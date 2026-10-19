@@ -271,6 +271,49 @@ describe('MockTransport', () => {
       expect(labels(got.raw)[0]).toBe('welcome');
       t.disconnect();
     });
+
+    it('a reconnect on the same instance times welcome from now, not from the dropped session', () => {
+      // The due time of the last message of a dropped session used to survive `disconnect()`, so
+      // the next welcome waited for the slowest message of the old session (up to `jitterMs` late).
+      // Reference = an instance whose `out` line has no history. `ping` draws one jitter value, as
+      // does each of the two messages `connect()` queues here (welcome + the one bot's join), so
+      // both instances sit at the same point of the jitter stream and the welcome has to land at
+      // the same instant. If the draws ever stop lining up this fails too, it cannot pass by luck.
+      const opts = { bots: 1, latencyMs: 150, jitterMs: 50, clock: () => Date.now() };
+      /** Connects, lets the fake clock run past the largest possible delay, returns when welcome landed. */
+      const welcomeLag = (t: MockTransport): number | undefined => {
+        const start = Date.now();
+        let lag: number | undefined;
+        t.onWelcome(() => {
+          lag ??= Date.now() - start;
+        });
+        t.connect();
+        vi.advanceTimersByTime(opts.latencyMs + opts.jitterMs + 50);
+        t.disconnect();
+        return lag;
+      };
+
+      for (let seed = 1; seed <= 30; seed++) {
+        vi.useFakeTimers();
+
+        const reused = new MockTransport({ ...opts, seed });
+        reused.connect(); // session 1: welcome + playerJoined queued ...
+        reused.disconnect(); // ... and dropped, at the same instant we reconnect
+        const reusedLag = welcomeLag(reused);
+
+        const fresh = new MockTransport({ ...opts, seed });
+        fresh.ping(0);
+        fresh.ping(0);
+        fresh.disconnect(); // drops the two pings; the `out` line was never used
+        const freshLag = welcomeLag(fresh);
+
+        vi.useRealTimers();
+        expect(freshLag, `seed ${seed}: fresh welcome arrives`).toBeDefined();
+        expect(freshLag, `seed ${seed}: within latency + jitter`).toBeGreaterThanOrEqual(150);
+        expect(freshLag, `seed ${seed}: within latency + jitter`).toBeLessThanOrEqual(200);
+        expect(reusedLag, `seed ${seed}: same instant as a fresh line`).toBe(freshLag);
+      }
+    });
   });
 
   it('unsubscribe stops callbacks', () => {
