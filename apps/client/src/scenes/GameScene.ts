@@ -2,15 +2,17 @@ import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
 import { createTransport } from '../net/createTransport';
 import type { Unsubscribe } from '../net/Transport';
+import { CurseFrames } from '../ui/CurseFrames';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
+import { toCurseFrames } from '../view/curseFrames';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
-import { BOARD_HEIGHT_PX, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
+import { BOARD_HEIGHT_PX, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
 import { type Drawable, RoundView } from '../view/roundView';
 import { AssetKey, SceneKey } from './keys';
 
 /** Draw order, back to front. */
-const Depth = { Box: 1, Item: 2, Bomb: 3, Flame: 4, Player: 10, Marker: 11 } as const;
+const Depth = { Box: 1, Item: 2, Bomb: 3, Flame: 4, Player: 10, Marker: 11, Curse: 12 } as const;
 const MARKER_OFFSET = { x: (TILE_SIZE - 8) / 2, y: -7 };
 
 type Sprite = Phaser.GameObjects.Sprite;
@@ -30,6 +32,7 @@ export class GameScene extends Phaser.Scene {
   private flameSprites = new Map<string, Sprite>();
   private itemSprites = new Map<string, Sprite>();
   private marker: Phaser.GameObjects.Image | undefined;
+  private curseFrames: CurseFrames | undefined;
   private tracker = new DirectionTracker();
   private sender: InputSender | undefined;
   private bombPressed = false;
@@ -53,6 +56,9 @@ export class GameScene extends Phaser.Scene {
     this.tracker = new DirectionTracker();
     this.selfId = undefined;
     this.bombPressed = false;
+    // the HUD strip lives above the board: the game camera only covers the board
+    this.cameras.main.setViewport(0, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, BOARD_HEIGHT_PX);
+    this.curseFrames = new CurseFrames(this, Depth.Curse, TILE_SIZE);
     this.marker = this.add
       .image(0, 0, AssetKey.Marker)
       .setOrigin(0, 0)
@@ -77,6 +83,14 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    const scene = this;
+    this.scene.launch(SceneKey.Hud, {
+      get round() {
+        return scene.round;
+      },
+      selfId: () => this.selfId,
+    });
+
     const cleanups: Unsubscribe[] = [
       transport.onWelcome((msg) => {
         this.selfId = msg.playerId;
@@ -93,6 +107,9 @@ export class GameScene extends Phaser.Scene {
     cleanups.push(...this.bindKeyboard());
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scene.stop(SceneKey.Hud);
+      this.curseFrames?.clear();
+      this.curseFrames = undefined;
       for (const off of cleanups) off();
       transport.disconnect();
       this.sender = undefined;
@@ -118,6 +135,7 @@ export class GameScene extends Phaser.Scene {
     this.drawFlames(d.flames);
     this.drawItems(d.items);
     this.drawPlayers(d.players);
+    this.curseFrames?.sync(toCurseFrames(d.players, this.round.latest?.tick ?? 0));
   }
 
   /**
@@ -136,6 +154,7 @@ export class GameScene extends Phaser.Scene {
       pool.clear();
     }
     this.marker?.setVisible(false);
+    this.curseFrames?.clear();
   }
 
   private drawBoxes(): void {
