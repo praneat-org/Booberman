@@ -46,6 +46,7 @@ skills:
    - `wont-fix: <เหตุผล> (อ้าง D… / AC ข้อ…)` — ไม่ resolve ปล่อยให้ QA เห็น
    - `deferred: <Linear ID>` — สร้าง sub-issue ใหม่ใต้ parent เดิม status `Backlog`
    - ไม่เห็นด้วยในเรื่อง **security** หรือ **กฎเกม** (เช่น client ตัดสินผลเกมเอง) → ตอบ `escalated` + label `needs-human` แล้วจบรอบ
+   - finding **นอก diff** (อยู่ใน body ของ review ไม่มี thread) → ตอบเป็น PR comment บรรทัดแรกเป็น decision ตามรูปแบบเดียวกัน แล้วอ้าง file:line + ลิงก์ review (BE-55)
 3. ใช้ branch / PR เดิม · ห้าม force-push · รัน lint / typecheck / test / build ให้ผ่าน
 4. comment `[FE Dev] ตอบ CodeRabbit รอบ N` เป็นตาราง: # · category · finding · decision · commit / เหตุผล · **เปลี่ยน behavior? (ใช่/ไม่)**
 5. ส่งต่อ: มี fix ที่เปลี่ยน behavior / UI ที่ผู้เล่นเห็น → `In Review` · แก้แค่ style / refactor / test / docs → `CodeRabbit`
