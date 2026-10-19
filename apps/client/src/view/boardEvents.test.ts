@@ -209,7 +209,7 @@ describe('sounds follow the round view (FE-18)', () => {
   it('roundStart and welcome reset the tracker: the old round vanishing is not heard, a waiting win is dropped', () => {
     for (const reset of [
       (r: RoundView) => applyBoardEvent(exampleServerMessages.roundStart, r),
-      (r: RoundView) => applyWelcome({ grid: exampleGrid() }, r),
+      (r: RoundView) => applyWelcome({ grid: exampleGrid(), playerId: 'p1' }, r, 'Hi'),
     ]) {
       const round = newRound();
       hear(round, {
