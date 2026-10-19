@@ -151,6 +151,7 @@ export class EntryOverlay {
       create.textContent = s.creating ? 'กำลังสร้างห้อง…' : 'สร้างห้องใหม่';
     }
     this.createError.textContent = s.createError ?? '';
+    this.createError.hidden = s.createError === null;
   }
 
   /**

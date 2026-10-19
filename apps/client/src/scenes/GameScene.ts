@@ -5,6 +5,7 @@ import { type JoinFailureKind, JoinWatcher } from '../net/joinWatcher';
 import type { Unsubscribe } from '../net/Transport';
 import { CurseFrames } from '../ui/CurseFrames';
 import { attachDebugOverlay } from '../ui/DebugOverlay';
+import { RoomBar } from '../ui/RoomBar';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
 import { toCurseFrames } from '../view/curseFrames';
 import { debugEnabled } from '../view/debugStats';
@@ -170,24 +171,36 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * The real server only: turn "did the join work?" into a trip back to the lobby with the reason
-   * when it did not. `?mock=1` has no room.
+   * The real server only: show the room bar (copy / share link) and turn "did the join work?" into
+   * either the bar's button or a trip back to the lobby with the reason. `?mock=1` has no room.
    */
   private watchJoin(
     transport: NonNullable<ReturnType<typeof createTransport>>,
     join: { roomId: string; nickname: string },
   ): Unsubscribe[] {
     if (transportKind(window.location.search) !== 'ws') return [];
+    const host = document.getElementById('app');
+    const bar = host
+      ? new RoomBar({ roomId: join.roomId }, host, () => this.refitCanvas())
+      : undefined;
     const leave = (kind: JoinFailureKind) => {
       const failure = { kind, roomId: join.roomId, nickname: join.nickname };
       this.scene.start(SceneKey.Lobby, { failure } satisfies LobbySceneData);
     };
     const watcher = new JoinWatcher(transport, {
-      onJoined: () => {},
+      onJoined: () => bar?.setJoined(true),
       onFailed: leave,
       onLost: () => leave('CONNECTION_LOST'),
     });
-    return [() => watcher.dispose()];
+    return [() => watcher.dispose(), () => bar?.destroy()];
+  }
+
+  /**
+   * The room bar changes how much height `#app` has. Phaser only re-measures its parent every
+   * 500 ms, and `refresh()` alone reuses the old measurement, so measure first.
+   */
+  private refitCanvas(): void {
+    if (this.scale.getParentBounds()) this.scale.refresh();
   }
 
   /**
