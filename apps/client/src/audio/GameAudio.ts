@@ -1,8 +1,9 @@
 import { SFX_VOICES, type SfxName } from './sfx';
 
-/** The part of Phaser's sound manager we use, so the rules below can be unit tested without Phaser. */
+/** The part of Phaser's sound manager we use, so the rules below can be unit tested without Phaser (see `phaserSound.ts` for the real one). */
 export interface SoundPort {
-  mute: boolean;
+  /** Silences / restores everything the port plays, including sounds that are already in flight. */
+  setMute(muted: boolean): void;
   /** True until the browser lets us make sound (first tap / key press). */
   readonly locked: boolean;
   /** Only the Web Audio manager has one; `suspended` also happens when the tab is in the background. */
@@ -68,7 +69,7 @@ export class GameAudio {
     this.onLog = deps.onLog;
     this.muted = deps.loadMuted();
     // the sound manager outlives the scene: always bring it in line with the saved choice
-    this.sound.mute = this.muted;
+    this.sound.setMute(this.muted);
   }
 
   get isMuted(): boolean {
@@ -78,7 +79,7 @@ export class GameAudio {
   setMuted(muted: boolean): void {
     if (muted === this.muted) return;
     this.muted = muted;
-    this.sound.mute = muted;
+    this.sound.setMute(muted);
     this.saveMuted(muted);
     for (const cb of this.listeners) cb(muted);
   }

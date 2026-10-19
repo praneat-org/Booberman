@@ -10,15 +10,26 @@ interface Played {
 function fakeSound(init: Partial<Pick<SoundPort, 'locked' | 'context'>> = {}) {
   const played: Played[] = [];
   const sound = {
+    /** What the last `setMute` asked for (the real port writes the master gain). */
     mute: false,
+    muteCalls: [] as boolean[],
     locked: false,
     context: undefined,
     ...init,
+    setMute(muted: boolean) {
+      this.mute = muted;
+      this.muteCalls.push(muted);
+    },
     play: (key: string, config?: Played['config']) => {
       played.push({ key, config });
       return true;
     },
-  } as SoundPort & { locked: boolean; context?: { state: string } };
+  } as SoundPort & {
+    mute: boolean;
+    muteCalls: boolean[];
+    locked: boolean;
+    context?: { state: string };
+  };
   return { sound, played };
 }
 
@@ -146,6 +157,7 @@ describe('GameAudio mute switch', () => {
     s.sound.mute = true;
     const { sound } = setup({ sound: s, saved: false });
     expect(sound.mute).toBe(false);
+    expect(sound.muteCalls).toEqual([false]); // told explicitly, not left to a default
   });
 
   it('toggle mutes the sound manager, saves, and silences later triggers; toggling back restores', () => {

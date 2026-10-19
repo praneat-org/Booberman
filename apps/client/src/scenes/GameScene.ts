@@ -3,6 +3,7 @@ import Phaser from 'phaser';
 import { GameAudio } from '../audio/GameAudio';
 import { MuteButton } from '../audio/MuteButton';
 import { loadMuted, saveMuted } from '../audio/muteStore';
+import { toSoundPort } from '../audio/phaserSound';
 import { joinFromLocation } from '../lobby/joinTarget';
 import { createTransport } from '../net/createTransport';
 import type { Unsubscribe } from '../net/Transport';
@@ -116,7 +117,7 @@ export class GameScene extends Phaser.Scene {
     this.sender = new InputSender((input) => transport.send(input));
     // sound follows the server's snapshots / events (see SfxTracker), never our own key presses
     const audio = new GameAudio({
-      sound: this.sound,
+      sound: toSoundPort(this.sound),
       cache: this.cache.audio,
       loadMuted,
       saveMuted,
