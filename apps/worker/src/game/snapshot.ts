@@ -35,7 +35,7 @@ export function toSnapshot(state: GameState, viewer?: PlayerId): SnapshotMessage
       x: round2(p.x),
       y: round2(p.y),
       alive: p.alive,
-      curse: p.curse,
+      curse: p.alive ? p.curse : 0,
       teleport: false,
     })),
     bombs: state.bombs.map((b) => ({ x: b.x, y: b.y, fuse: b.fuse })),

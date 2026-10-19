@@ -24,6 +24,10 @@ export function createInitialState(
       y,
       alive: true,
       curse: 0,
+      cursedBy: null,
+      cursedBySession: null,
+      curseCooldown: 0,
+      curseTransfers: 0,
       ackSeq: 0,
       heldDir: 'none',
     };

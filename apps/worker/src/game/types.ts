@@ -26,8 +26,26 @@ export interface PlayerSim {
   readonly x: number;
   readonly y: number;
   readonly alive: boolean;
-  /** Ticks of reverse-controls curse left (0 = none). Used by the real rules (CAR-3795). */
+  /**
+   * Ticks of reverse-controls curse left (0 = none); ages once per tick. A dead player keeps the
+   * value (and the fields below) as it was at death, frozen, so kill attribution (BE-41) can read
+   * who the curse came from; snapshots report 0 for the dead.
+   */
   readonly curse: number;
+  /**
+   * Who the current curse came from, for kill attribution: the player who broke the box (item
+   * pickup) or who passed it on (contact). `null` = no one to credit: not cursed, or picked up from
+   * a box this player broke themselves. `DEPARTED` = that player has left the room (D33: counts for
+   * nobody). Use `curseSourceOf` at the moment of death, not this field alone: the slot may have
+   * been taken over by someone else since.
+   */
+  readonly cursedBy: PlayerId | typeof DEPARTED | null;
+  /** `PlayerSim.session` of `cursedBy` (D33), `null` when `cursedBy` is `null`. */
+  readonly cursedBySession: number | null;
+  /** Ticks left in which this player cannot hand the curse back to `cursedBy` (0 = free). */
+  readonly curseCooldown: number;
+  /** Times this player passed a curse on by contact this round (stats / nicknames, BE-41). */
+  readonly curseTransfers: number;
   /** Highest input seq applied so far. */
   readonly ackSeq: number;
   /** Direction of the tile step in progress (absent / `none` while standing on a tile). */
@@ -71,6 +89,8 @@ export interface Item {
   readonly y: number;
   readonly kind: ItemKind;
   readonly droppedBy: PlayerId;
+  /** `PlayerSim.session` of `droppedBy` (D33): the curse credit must survive the slot being reused. */
+  readonly droppedBySession: number;
 }
 
 /** How a finished round ended; `winner` is `null` for a draw. Mirrors the `roundEnd` event. */
