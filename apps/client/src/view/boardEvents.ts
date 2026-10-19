@@ -29,5 +29,10 @@ export function applyBoardEvent(msg: GameEvent, round: RoundView): boolean {
     round.reset(msg.grid);
     return true;
   }
+  if (msg.kind === 'roundEnd') {
+    // only the sound: the end-of-round screen is FE-21. D35's `kill` event goes here too (see SfxTracker)
+    round.sfx.roundEnded(msg.winner, round.buffer.latestTick);
+    return false;
+  }
   return false;
 }
