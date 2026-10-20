@@ -15,6 +15,30 @@ export interface PlayerInput {
 /** `killedBy` value for a kill credited to a player who has since left the room (D33): counts for nobody. */
 export const DEPARTED = 'departed';
 
+/**
+ * What a player did this round (BE-41). Counts are for the end screen and for D1 (CAR-3799 columns,
+ * camelCase); they start at 0 every round and are frozen when the player dies. Someone who leaves
+ * takes their numbers with them (D33: no summary row for people who are gone).
+ */
+export interface PlayerStats {
+  /** Other players killed, any cause (a self-kill is not a kill). */
+  readonly kills: number;
+  /** Times this player died, whoever got the credit (a self-kill counts too). */
+  readonly deaths: number;
+  /** Deaths whose credit fell on the victim themselves. */
+  readonly selfKills: number;
+  /** Kills made through a curse (`kills` includes these). */
+  readonly curseKills: number;
+  /** Kills made through a kicked bomb (`kills` includes these; BE-45). */
+  readonly kickKills: number;
+  /** Kills made as a ghost (`kills` includes these; BE-46). */
+  readonly ghostKills: number;
+  /** Curses this player passed on by contact. */
+  readonly transfers: number;
+  /** แต้มเกรียน: sum of `GameConfig.trollPoints` for every kill and every transfer. */
+  readonly trollPoints: number;
+}
+
 export interface PlayerSim {
   readonly id: PlayerId;
   /**
@@ -44,8 +68,8 @@ export interface PlayerSim {
   readonly cursedBySession: number | null;
   /** Ticks left in which this player cannot hand the curse back to `cursedBy` (0 = free). */
   readonly curseCooldown: number;
-  /** Times this player passed a curse on by contact this round (stats / nicknames, BE-41). */
-  readonly curseTransfers: number;
+  /** Round counters for the end screen / D1 (BE-41). */
+  readonly stats: PlayerStats;
   /** Highest input seq applied so far. */
   readonly ackSeq: number;
   /** Direction of the tile step in progress (absent / `none` while standing on a tile). */
@@ -54,7 +78,9 @@ export interface PlayerSim {
   readonly heldDir: Dir;
   /**
    * Set when the player dies: owner of the bomb that started the flame (own id = suicide), or
-   * `DEPARTED` when that owner has left the room (D33: nobody gets the kill).
+   * `DEPARTED` when that owner has left the room (D33: nobody gets the kill). This is the raw
+   * flame owner; who really gets the credit (a curse comes first) is decided in `attribution.ts`
+   * and announced as the `kill` event.
    */
   readonly killedBy?: PlayerId | typeof DEPARTED;
 }

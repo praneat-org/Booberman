@@ -1,5 +1,6 @@
 import { PROTOCOL_VERSION } from '@booberman/protocol';
 import { createBoard, SPAWNS } from './board';
+import { EMPTY_STATS } from './stats';
 import type { GameState, PlayerId, PlayerSim, StepResult } from './types';
 
 /**
@@ -27,7 +28,7 @@ export function createInitialState(
       cursedBy: null,
       cursedBySession: null,
       curseCooldown: 0,
-      curseTransfers: 0,
+      stats: EMPTY_STATS,
       ackSeq: 0,
       heldDir: 'none',
     };

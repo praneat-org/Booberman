@@ -6,7 +6,7 @@ import {
   exampleServerMessages,
   exampleSnapshot,
 } from './fixtures';
-import { ClientMessage, ServerMessage } from './messages';
+import { ClientMessage, KillCause, ServerMessage, TITLE_LABELS, TitleId } from './messages';
 import { parseClientMessage, parseServerMessage } from './parse';
 
 describe('valid messages', () => {
@@ -114,6 +114,83 @@ describe('invalid messages', () => {
     expect(code({ ...end, winner: 'p9' })).toBe('BAD_MESSAGE');
     const { winner: _w, ...noWinner } = end;
     expect(code(noWinner)).toBe('BAD_MESSAGE'); // draw must say `winner: null`, not omit it
+  });
+});
+
+describe('kill and round summary (BE-41)', () => {
+  const code = (raw: unknown) => {
+    const r = parseServerMessage(raw);
+    return r.ok ? 'ok' : r.error.code;
+  };
+  const kill = exampleServerMessages.killBomb;
+  const end = exampleServerMessages.roundEndWin;
+
+  it('kill: killer may be null (credit to someone who left, D33) but victim and cause are required', () => {
+    expect(code(exampleServerMessages.killDeparted)).toBe('ok');
+    expect(code({ ...kill, victim: null })).toBe('BAD_MESSAGE');
+    const { cause: _c, ...noCause } = kill;
+    expect(code(noCause)).toBe('BAD_MESSAGE');
+    const { killer: _k, ...noKiller } = kill;
+    expect(code(noKiller)).toBe('BAD_MESSAGE'); // "nobody" is `killer: null`, never omitted
+    expect(code({ ...kill, cause: 'meteor' })).toBe('BAD_MESSAGE');
+    expect(code({ ...kill, killer: 'p9' })).toBe('BAD_MESSAGE');
+  });
+
+  it('every kill cause of the credit table can be sent (ghost and kick are reserved for BE-46 / BE-45)', () => {
+    expect([...KillCause.options].sort()).toEqual(['bomb', 'curse', 'ghost', 'kick', 'self']);
+    for (const cause of KillCause.options) expect(code({ ...kill, cause })).toBe('ok');
+  });
+
+  it('roundEnd carries the table and the titles, and refuses a half-filled one', () => {
+    const { stats: _s, ...noStats } = end;
+    expect(code(noStats)).toBe('BAD_MESSAGE');
+    const { titles: _t, ...noTitles } = end;
+    expect(code(noTitles)).toBe('BAD_MESSAGE');
+    expect(code({ ...end, stats: [{ ...end.stats[0], trollPoints: -1 }] })).toBe('BAD_MESSAGE');
+    expect(code({ ...end, stats: [{ ...end.stats[0], kills: 1.5 }] })).toBe('BAD_MESSAGE');
+    expect(code({ ...end, titles: [{ title: 'king', players: ['p1'], value: 1 }] })).toBe(
+      'BAD_MESSAGE',
+    );
+    // a title nobody holds, or holds with value 0, is never sent
+    expect(code({ ...end, titles: [{ title: 'troll', players: [], value: 3 }] })).toBe(
+      'BAD_MESSAGE',
+    );
+    expect(code({ ...end, titles: [{ title: 'troll', players: ['p1'], value: 0 }] })).toBe(
+      'BAD_MESSAGE',
+    );
+  });
+
+  it('stats use the D1 column names of CAR-3799 (camelCase)', () => {
+    expect(Object.keys(end.stats[0] ?? {}).sort()).toEqual(
+      ['curseKills', 'deaths', 'id', 'kills', 'selfKills', 'transfers', 'trollPoints'].sort(),
+    );
+  });
+
+  it('every title has a Thai label', () => {
+    expect(Object.keys(TITLE_LABELS).sort()).toEqual([...TitleId.options].sort());
+    expect(TITLE_LABELS.troll).toBe('ตัวตึงสายเกรียน');
+  });
+
+  it('a 4-player roundEnd with every title is far below the server message limit', () => {
+    const full = {
+      ...end,
+      stats: ['p1', 'p2', 'p3', 'p4'].map((id) => ({
+        id,
+        kills: 99,
+        deaths: 99,
+        selfKills: 99,
+        curseKills: 99,
+        transfers: 99,
+        trollPoints: 999,
+      })),
+      titles: TitleId.options.map((title) => ({
+        title,
+        players: ['p1', 'p2', 'p3', 'p4'],
+        value: 999,
+      })),
+    };
+    expect(code(full)).toBe('ok');
+    expect(JSON.stringify(full).length).toBeLessThan(2048);
   });
 });
 

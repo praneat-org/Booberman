@@ -1,4 +1,5 @@
 import type { GameConfig } from './config';
+import { addStats } from './stats';
 import type { Dir, Item, PlayerId, PlayerSim } from './types';
 import { DEPARTED } from './types';
 
@@ -74,9 +75,10 @@ const cured = (p: PlayerSim): PlayerSim => ({
  * 3. contact: a cursed player (not one who picked it up this very tick) on the same tile as living, uncursed players passes the curse to the
  *    first of them by id, skipping `cursedBy` while the hand-back cooldown runs. It lasts for what
  *    was left or `curseMinTicksAfterTransfer` if more, `cursedBy` becomes the sender, and the
- *    sender is clean. Senders go in id order from the state before any transfer: a curse moves at
- *    most one hop per tick (no chain through three players in one tick) and two cursed players
- *    reaching the same clean player on the same tick is settled by id, the other keeps theirs.
+ *    sender is clean and scores the transfer (`transfers` +1 and its troll points). Senders go in
+ *    id order from the state before any transfer: a curse moves at most one hop per tick (no chain
+ *    through three players in one tick) and two cursed players reaching the same clean player on
+ *    the same tick is settled by id, the other keeps theirs.
  *
  * Contact uses the nearest tile (`Math.round`), same as bombs and flames; players walk through each
  * other (D23), so passing in a corridor also counts. Pure; items come back without the taken ones.
@@ -143,7 +145,10 @@ export function stepCurses(
         cfg.curseTransferCooldownTicks,
       ),
     );
-    out.set(sender.id, { ...cured(sender), curseTransfers: sender.curseTransfers + 1 });
+    out.set(
+      sender.id,
+      addStats(cured(sender), { transfers: 1, trollPoints: cfg.trollPoints.transfer }),
+    );
   }
   return { players: before.map((p) => out.get(p.id) as PlayerSim), items: left };
 }
