@@ -131,6 +131,7 @@ describe('webSocketError', () => {
       await room.webSocketError(ws, new Error('boom'));
     });
     expect(await a.next(isEvent('playerLeft'))).toMatchObject({ playerId: 'p2' });
+    expect(await waitClosed(b)).toMatchObject({ code: 1011, reason: 'error' });
     const players = await runInDurableObject(stubFor('errroom'), (room: RoomDO) =>
       room.players().map((p) => p.playerId),
     );

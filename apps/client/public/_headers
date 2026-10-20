@@ -1,11 +1,6 @@
-# Workers Static Assets headers (BE-31 / CAR-3788). Vite copies this file from public/ into dist/.
-# Cloudflare merges every matching rule, so the long-cache rule detaches the default first.
-
-# default (index.html, /room/abc123 SPA fallback, ...): always revalidate, so a new deploy reaches players
 /*
   Cache-Control: no-cache
 
-# Vite writes JS/CSS/images to assets/<name>-<hash>.<ext>: the name changes with the content
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=31536000, immutable
