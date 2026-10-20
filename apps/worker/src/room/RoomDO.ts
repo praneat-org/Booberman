@@ -119,23 +119,16 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+  override async webSocketClose(ws: WebSocket, _code: number, _reason: string): Promise<void> {
+    // The socket is already closing; re-closing it from here races the cleanup path and can
+    // leave the room in a stale joined state during a fast leave->join sequence.
     this.leave(ws);
-    try {
-      ws.close(code === 1005 ? 1000 : code, reason);
-    } catch {
-      // already closed
-    }
   }
 
   /** Treated like a close: the player leaves and the others are told. */
   override async webSocketError(ws: WebSocket, _error?: unknown): Promise<void> {
+    // Same here: the runtime has already signalled the socket is broken; closing it again is not needed.
     this.leave(ws);
-    try {
-      ws.close(1011, 'error');
-    } catch {
-      // already closed
-    }
   }
 
   /** Everyone who has joined (sorted by playerId), rebuilt from the sockets Cloudflare holds for us. */

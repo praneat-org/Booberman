@@ -71,7 +71,8 @@ async function* walk(dir: string, prefix: string): AsyncGenerator<{ rel: string;
     if (e.name.startsWith('.')) continue; // .DS_Store, .gitkeep ...
     const abs = join(dir, e.name);
     const rel = prefix ? `${prefix}/${e.name}` : e.name;
-    // symlinks are neither isFile() nor isDirectory() on a Dirent -> never followed
+    // Do not follow symlinks: Dirent.isSymbolicLink() is the explicit check and `stat()` would follow them.
+    if (e.isSymbolicLink()) continue;
     if (e.isDirectory()) yield* walk(abs, rel);
     else if (e.isFile()) yield { rel, abs };
   }
