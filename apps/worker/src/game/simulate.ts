@@ -1,9 +1,12 @@
 import { type GameEvent, GRID_WIDTH, PROTOCOL_VERSION } from '@booberman/protocol';
+import { attributeKill, type Kill, scoreKills } from './attribution';
 import { isWalkable } from './board';
 import { resolveExplosions } from './bombs';
 import { DEFAULT_CONFIG } from './config';
+import { effectiveDir, stepCurses } from './curse';
 import { VECTORS } from './dirs';
 import { checkRoundEnd } from './round';
+import { summarizeRound } from './summary';
 import type {
   Bomb,
   Dir,
@@ -54,12 +57,13 @@ function walk(p: PlayerSim, grid: string, bombTiles: ReadonlySet<number>, cfg: G
     const [tx, ty] = stepTarget(p.x, p.y, p.walkDir ?? 'none');
     return advance(p, p.walkDir ?? 'none', tx, ty, cfg.playerSpeed);
   }
-  if (p.heldDir === 'none') return p;
-  const [dx, dy] = VECTORS[p.heldDir];
+  const dir = effectiveDir(p); // the curse reverses it here, on the server
+  if (dir === 'none') return p;
+  const [dx, dy] = VECTORS[dir];
   const tx = p.x + dx;
   const ty = p.y + dy;
   if (!isWalkable(grid, tx, ty) || bombTiles.has(tileKey(tx, ty))) return p;
-  return advance(p, p.heldDir, tx, ty, cfg.playerSpeed);
+  return advance(p, dir, tx, ty, cfg.playerSpeed);
 }
 
 function step(
@@ -86,6 +90,7 @@ function placeBombs(
   const out = [...bombs];
   for (const p of players) {
     if (!p.alive || !inputs.get(p.id)?.bomb) continue;
+    if (cfg.curseBlocksBombing && p.curse > 0) continue;
     const [x, y] = tileOf(p);
     const mine = out.filter((b) => b.ownerSession === p.session).length;
     if (mine >= cfg.maxBombs || out.some((b) => b.x === x && b.y === y)) continue;
@@ -103,25 +108,35 @@ function creditOf(players: readonly PlayerSim[], fire: GameState['flames'][numbe
   return players.find((q) => q.session === fire.ownerSession)?.id ?? DEPARTED;
 }
 
-function applyDeaths(players: readonly PlayerSim[], flames: GameState['flames']): PlayerSim[] {
-  return players.map((p) => {
+function applyDeaths(
+  players: readonly PlayerSim[],
+  flames: GameState['flames'],
+  cfg: GameConfig,
+): { players: PlayerSim[]; kills: Kill[] } {
+  const kills: Kill[] = [];
+  const next = players.map((p) => {
     if (!p.alive) return p;
     const [x, y] = tileOf(p);
     const fire = flames.find((f) => f.x === x && f.y === y);
     if (!fire) return p;
+    const owner = creditOf(players, fire);
+    // players in id order, so the kills (and their events) come out in id order too
+    kills.push(attributeKill(players, p, { owner, kind: 'bomb' }));
     return {
       ...p,
       alive: false,
-      heldDir: 'none',
-      walkDir: 'none',
-      killedBy: creditOf(players, fire),
+      heldDir: 'none' as const,
+      walkDir: 'none' as const,
+      killedBy: owner,
     };
   });
+  return { players: scoreKills(next, kills, cfg), kills };
 }
 
 /**
  * One 50 ms tick, in a fixed order: age bombs and flames -> walk -> place bombs ->
- * explode due bombs and their chain (boxes break, items drop) -> deaths -> round end
+ * explode due bombs and their chain (boxes break, items drop) -> deaths (credit and counters:
+ * attribution.ts, one `kill` event each) -> curses (age, pick up, pass on by contact; curse.ts) -> round end
  * (last survivor / all dead / time limit; D32 in the PR; elimination needs `contested`). After the end the state is frozen.
  * Pure: never mutates `state` or `inputs`; the result does not depend on Map iteration
  * order (players are stepped in id order, state keeps them sorted).
@@ -152,13 +167,28 @@ export function simulate(
   );
 
   const tick = state.tick + 1;
-  const players = applyDeaths(walked, blast.flames);
+  const deaths = applyDeaths(walked, blast.flames, cfg);
+  const cursed = stepCurses(deaths.players, blast.items, cfg);
+  const players = cursed.players;
   // sticky: judged on the players this tick started with, before anyone can leave again
   const contested = state.contested || state.players.length >= 2;
   const result = checkRoundEnd(players, tick, cfg, contested);
-  const events: GameEvent[] = result
-    ? [...blast.events, { v: PROTOCOL_VERSION, t: 'event', kind: 'roundEnd', ...result }]
-    : blast.events;
+  // order inside a tick: what broke, who died, then (always last) how the round ended
+  const events: GameEvent[] = [
+    ...blast.events,
+    ...deaths.kills.map(
+      (k): GameEvent => ({ v: PROTOCOL_VERSION, t: 'event', kind: 'kill', ...k }),
+    ),
+  ];
+  if (result) {
+    events.push({
+      v: PROTOCOL_VERSION,
+      t: 'event',
+      kind: 'roundEnd',
+      ...result,
+      ...summarizeRound(players),
+    });
+  }
 
   return {
     state: {
@@ -170,7 +200,7 @@ export function simulate(
       players,
       bombs: blast.bombs,
       flames: blast.flames,
-      items: blast.items,
+      items: cursed.items,
       ...(result && { result }),
     },
     events,

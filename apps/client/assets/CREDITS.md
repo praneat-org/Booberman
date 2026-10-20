@@ -2,6 +2,13 @@
 
 All art and audio must be CC0 (D11) — Kenney (https://kenney.nl/assets) preferred. Never use sprites ripped from other games.
 
+## Audio (FE-18)
+
+`public/audio/*.ogg` are unmodified copies of Kenney (CC0) sound effects from his official starter-kit repositories on
+GitHub; `*.mp3` are re-encodes of the same files for browsers without Ogg Vorbis. Source repo, commit, path and sha256 of
+every file, plus the license text those repositories ship, are in `public/audio/LICENSE.txt` (kept next to the files so it
+is also deployed with them).
+
 ## Current (placeholder)
 
 `public/tiles/tileset.png`, `public/sprites/{player,box,bomb,flame,items,marker}.png`, `public/maps/arena.json` are original placeholder

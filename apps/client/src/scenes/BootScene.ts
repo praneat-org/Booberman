@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
+import { AUDIO_FILES } from '../audio/sfx';
 import { failedRequiredAssets } from '../view/bootAssets';
-import { BOARD_HEIGHT_PX, BOARD_WIDTH_PX, loadingBarFill, TILE_SIZE } from '../view/layout';
+import { CANVAS_HEIGHT_PX, CANVAS_WIDTH_PX, loadingBarFill, TILE_SIZE } from '../view/layout';
 import { FACINGS, WALK_FRAMES, walkAnimKey } from '../view/playerAnim';
 import { AssetKey, SceneKey } from './keys';
 
@@ -27,8 +28,8 @@ export class BootScene extends Phaser.Scene {
 
   preload(): void {
     this.failedKeys = new Set();
-    const x = (BOARD_WIDTH_PX - BAR_WIDTH) / 2;
-    const y = BOARD_HEIGHT_PX / 2;
+    const x = (CANVAS_WIDTH_PX - BAR_WIDTH) / 2;
+    const y = CANVAS_HEIGHT_PX / 2;
     const frame = this.add.rectangle(x, y, BAR_WIDTH, BAR_HEIGHT).setOrigin(0, 0.5);
     frame.setStrokeStyle(1, 0xffffff);
     // inset 1px so the fill sits inside the border instead of overlapping it
@@ -62,9 +63,14 @@ export class BootScene extends Phaser.Scene {
       });
     }
     this.load.image(AssetKey.Marker, 'sprites/marker.png');
+    // sound is optional: a file that fails to load only means that sound stays silent (see create)
+    for (const file of AUDIO_FILES) this.load.audio(file.key, file.urls);
   }
 
   create(): void {
+    const silent = AUDIO_FILES.filter((f) => this.failedKeys.has(f.key)).map((f) => f.key);
+    if (silent.length > 0)
+      console.warn('[audio] failed to load, these sounds stay silent:', silent);
     const failed = failedRequiredAssets(this.failedKeys, REQUIRED_ASSETS);
     if (failed.length === 0) {
       // only after every required sheet loaded: an anim made from a failed sheet has no frames and `exists` would block a later retry
@@ -94,8 +100,8 @@ export class BootScene extends Phaser.Scene {
   private showLoadError(failed: string[]): void {
     for (const part of this.bar) part.destroy();
     this.bar = [];
-    const cx = BOARD_WIDTH_PX / 2;
-    const cy = BOARD_HEIGHT_PX / 2;
+    const cx = CANVAS_WIDTH_PX / 2;
+    const cy = CANVAS_HEIGHT_PX / 2;
     const style = { fontFamily: 'monospace', color: '#ffffff', align: 'center' };
     this.add
       .text(cx, cy - 12, `load failed: ${failed.join(', ')}`, { ...style, fontSize: '8px' })

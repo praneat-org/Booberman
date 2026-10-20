@@ -1,16 +1,25 @@
 import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
+import { GameAudio } from '../audio/GameAudio';
+import { MuteButton } from '../audio/MuteButton';
+import { loadMuted, saveMuted } from '../audio/muteStore';
+import { toSoundPort } from '../audio/phaserSound';
+import { joinFromLocation } from '../lobby/joinTarget';
 import { createTransport } from '../net/createTransport';
 import type { Unsubscribe } from '../net/Transport';
+import { CurseFrames } from '../ui/CurseFrames';
+import { attachDebugOverlay } from '../ui/DebugOverlay';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
+import { toCurseFrames } from '../view/curseFrames';
+import { debugEnabled } from '../view/debugStats';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
-import { BOARD_HEIGHT_PX, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
+import { BOARD_HEIGHT_PX, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
 import { type Drawable, RoundView } from '../view/roundView';
 import { AssetKey, SceneKey } from './keys';
 
 /** Draw order, back to front. */
-const Depth = { Box: 1, Item: 2, Bomb: 3, Flame: 4, Player: 10, Marker: 11 } as const;
+const Depth = { Box: 1, Item: 2, Bomb: 3, Flame: 4, Player: 10, Marker: 11, Curse: 12 } as const;
 const MARKER_OFFSET = { x: (TILE_SIZE - 8) / 2, y: -7 };
 
 type Sprite = Phaser.GameObjects.Sprite;
@@ -30,9 +39,11 @@ export class GameScene extends Phaser.Scene {
   private flameSprites = new Map<string, Sprite>();
   private itemSprites = new Map<string, Sprite>();
   private marker: Phaser.GameObjects.Image | undefined;
+  private curseFrames: CurseFrames | undefined;
   private tracker = new DirectionTracker();
   private sender: InputSender | undefined;
   private bombPressed = false;
+  private audio: GameAudio | undefined;
 
   constructor() {
     super(SceneKey.Game);
@@ -53,13 +64,18 @@ export class GameScene extends Phaser.Scene {
     this.tracker = new DirectionTracker();
     this.selfId = undefined;
     this.bombPressed = false;
+    this.audio = undefined;
+    // the HUD strip lives above the board: the game camera only covers the board
+    this.cameras.main.setViewport(0, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, BOARD_HEIGHT_PX);
+    this.curseFrames = new CurseFrames(this, Depth.Curse, TILE_SIZE);
     this.marker = this.add
       .image(0, 0, AssetKey.Marker)
       .setOrigin(0, 0)
       .setDepth(Depth.Marker)
       .setVisible(false);
 
-    const transport = createTransport(window.location.search);
+    const join = joinFromLocation(window.location);
+    const transport = createTransport(window.location.search, join);
     if (!transport) {
       this.add
         .text(
@@ -77,25 +93,60 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    const scene = this;
+    this.scene.launch(SceneKey.Hud, {
+      get round() {
+        return scene.round;
+      },
+      selfId: () => this.selfId,
+    });
+
     const cleanups: Unsubscribe[] = [
       transport.onWelcome((msg) => {
         this.selfId = msg.playerId;
-        applyWelcome(msg, this.round);
+        // the server never announces us to ourselves: our card's name is the one we joined with
+        applyWelcome(msg, this.round, join.nickname);
         this.destroyRoundSprites();
       }),
-      transport.onSnapshot((msg) => this.round.applySnapshot(msg)),
+      transport.onSnapshot((msg) => this.round.applySnapshot(msg, performance.now())),
       transport.onEvent((msg) => {
         if (applyBoardEvent(msg, this.round)) this.destroyRoundSprites();
       }),
       transport.onError((code, message) => console.warn('[transport] error', code, message)),
     ];
     this.sender = new InputSender((input) => transport.send(input));
-    cleanups.push(...this.bindKeyboard());
+    // sound follows the server's snapshots / events (see SfxTracker), never our own key presses
+    const audio = new GameAudio({
+      sound: toSoundPort(this.sound),
+      cache: this.cache.audio,
+      loadMuted,
+      saveMuted,
+      onLog: debugEnabled(window.location.search)
+        ? (e) => console.info('[sfx]', e.name, e.outcome)
+        : undefined,
+    });
+    this.audio = audio;
+    const muteButton = new MuteButton(audio);
+    cleanups.push(() => muteButton.destroy());
+    cleanups.push(...this.bindKeyboard(audio));
+    if (debugEnabled(window.location.search)) {
+      cleanups.push(
+        attachDebugOverlay(transport, () => ({
+          buffered: this.round.buffer.size,
+          latestTick: this.round.buffer.latestTick,
+          renderTick: this.round.renderTick,
+        })),
+      );
+    }
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scene.stop(SceneKey.Hud);
+      this.curseFrames?.clear();
+      this.curseFrames = undefined;
       for (const off of cleanups) off();
       transport.disconnect();
       this.sender = undefined;
+      this.audio = undefined;
     });
     transport.connect();
 
@@ -105,6 +156,8 @@ export class GameScene extends Phaser.Scene {
         transport,
         snapshot: () => this.round.latest,
         selfId: () => this.selfId,
+        audio,
+        sound: this.sound,
       };
     }
   }
@@ -112,12 +165,14 @@ export class GameScene extends Phaser.Scene {
   override update(): void {
     this.sender?.update(this.tracker.current(), this.bombPressed);
     this.bombPressed = false;
+    for (const name of this.round.frame(performance.now())) this.audio?.trigger(name);
     this.drawBoxes();
     const d = this.round.drawable(this.selfId);
     this.drawBombs(d.bombs);
     this.drawFlames(d.flames);
     this.drawItems(d.items);
     this.drawPlayers(d.players);
+    this.curseFrames?.sync(toCurseFrames(d.players, this.round.latest?.tick ?? 0));
   }
 
   /**
@@ -136,6 +191,7 @@ export class GameScene extends Phaser.Scene {
       pool.clear();
     }
     this.marker?.setVisible(false);
+    this.curseFrames?.clear();
   }
 
   private drawBoxes(): void {
@@ -247,12 +303,13 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Arrow keys + Space; blur / hidden tab → release everything so we send `none` (D27). */
-  private bindKeyboard(): Unsubscribe[] {
+  /** Arrow keys + Space, `M` mutes; blur / hidden tab → release everything so we send `none` (D27). */
+  private bindKeyboard(audio: GameAudio): Unsubscribe[] {
     const keyboard = this.input.keyboard;
     if (!keyboard) return [];
     const cursors = keyboard.createCursorKeys();
     const space = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    const mute = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.M);
     const offs: Unsubscribe[] = [];
     const dirKeys: [Phaser.Input.Keyboard.Key, HeldDir][] = [
       [cursors.up, 'up'],
@@ -275,6 +332,9 @@ export class GameScene extends Phaser.Scene {
     };
     space.on('down', bomb);
     offs.push(() => space.off('down', bomb));
+    const toggleMute = () => audio.toggleMuted();
+    mute.on('down', toggleMute);
+    offs.push(() => mute.off('down', toggleMute));
 
     const release = () => this.tracker.clear();
     this.game.events.on(Phaser.Core.Events.BLUR, release);
@@ -283,6 +343,7 @@ export class GameScene extends Phaser.Scene {
       this.game.events.off(Phaser.Core.Events.BLUR, release);
       this.game.events.off(Phaser.Core.Events.HIDDEN, release);
       keyboard.removeKey(space);
+      keyboard.removeKey(mute);
       for (const [key] of dirKeys) keyboard.removeKey(key);
     });
     return offs;

@@ -1,34 +1,41 @@
-import { PROTOCOL_VERSION } from '@booberman/protocol';
 import Phaser from 'phaser';
-import { appTitle } from '../title';
-import { BOARD_HEIGHT_PX, BOARD_WIDTH_PX } from '../view/layout';
+import { roomIdFromPath } from '../lobby/joinTarget';
+import { LobbyController } from '../lobby/LobbyController';
+import { LobbyOverlay } from '../lobby/LobbyOverlay';
+import { transportKind } from '../net/createTransport';
 import { SceneKey } from './keys';
 
-/** Placeholder — the real lobby (nickname, rooms) is CAR-3792. */
+/**
+ * Home screen (`/`): nickname + create room + room list, drawn as a DOM overlay (see LobbyOverlay).
+ * `/room/:id` and `?mock=1` skip it and go straight to the game until FE-19 adds the join form.
+ */
 export class LobbyScene extends Phaser.Scene {
   constructor() {
     super(SceneKey.Lobby);
   }
 
   create(): void {
-    const cx = BOARD_WIDTH_PX / 2;
-    const cy = BOARD_HEIGHT_PX / 2;
-    const style = { fontFamily: 'monospace', color: '#ffffff' };
-    this.add
-      .text(cx, cy - 16, appTitle(PROTOCOL_VERSION), { ...style, fontSize: '12px' })
-      .setOrigin(0.5);
-    const hint = this.add
-      .text(cx, cy + 12, 'tap / press any key', { ...style, fontSize: '8px' })
-      .setOrigin(0.5);
-    this.tweens.add({ targets: hint, alpha: 0.3, duration: 600, yoyo: true, repeat: -1 });
-
-    let started = false;
-    const start = () => {
-      if (started) return;
-      started = true;
+    const { pathname, search } = window.location;
+    if (roomIdFromPath(pathname) !== undefined || transportKind(search) === 'mock') {
       this.scene.start(SceneKey.Game);
+      return;
+    }
+
+    const parent = document.getElementById('app') ?? document.body;
+    const controller = new LobbyController({
+      navigate: (path) => window.location.assign(path),
+    });
+    const overlay = new LobbyOverlay(controller, parent);
+    // scene shutdown (or game destroy) must drop the DOM, timers and any in-flight fetch
+    const cleanup = () => {
+      this.events.off(Phaser.Scenes.Events.SHUTDOWN, cleanup);
+      this.events.off(Phaser.Scenes.Events.DESTROY, cleanup);
+      overlay.destroy();
+      controller.destroy();
     };
-    this.input.once(Phaser.Input.Events.POINTER_DOWN, start);
-    this.input.keyboard?.once('keydown', start);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, cleanup);
+    this.events.once(Phaser.Scenes.Events.DESTROY, cleanup);
+    controller.start();
+    if (import.meta.env.DEV) (window as unknown as { __bbLobby?: unknown }).__bbLobby = this;
   }
 }
