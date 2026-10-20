@@ -19,6 +19,12 @@ import { DEPARTED } from './types';
 
 const CFG = DEFAULT_CONFIG;
 
+describe('production curse duration', () => {
+  it('uses the six-second duration selected for CAR-3797', () => {
+    expect(CFG.curseTicks).toBe(120);
+  });
+});
+
 /** Same picture boards as bombs.test.ts: `#` wall, `x` box, `.` floor, `A`-`D` = p1-p4. */
 function board(rows: string[], extra: Partial<GameState> = {}): GameState {
   const found: [PlayerId, number, number][] = [];
