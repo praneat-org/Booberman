@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   type ErrorCode,
+  type GameEvent,
   MAX_PLAYERS_PER_ROOM,
   type PlayerId,
   PROTOCOL_VERSION,
@@ -24,9 +25,25 @@ const PLAYER_IDS = ['p1', 'p2', 'p3', 'p4'] as const satisfies readonly PlayerId
 /** Stored on each socket with serializeAttachment so it survives hibernation. */
 export type Attachment =
   | { joined: false; room: string }
-  | { joined: true; room: string; playerId: PlayerId; nickname: string; session: number };
+  | {
+      joined: true;
+      room: string;
+      playerId: PlayerId;
+      nickname: string;
+      session: number;
+      /** Pressed "play again" (D9). Lives here so it survives hibernation and leaves with the player. */
+      ready?: boolean;
+    };
 
-export type Player = { ws: WebSocket; playerId: PlayerId; nickname: string; session: number };
+export type Player = {
+  ws: WebSocket;
+  playerId: PlayerId;
+  nickname: string;
+  session: number;
+  ready: boolean;
+};
+
+type RoundEndEvent = Extract<GameEvent, { kind: 'roundEnd' }>;
 
 /** Close code sent with ROOM_FULL (4000-4999 is free for applications). */
 export const CLOSE_ROOM_FULL = 4001;
@@ -37,6 +54,8 @@ export const CLOSE_INVALID_NICKNAME = 4002;
 export const TICK_MS = 50;
 /** One `tick-stats` log line every this many ticks (5 s). */
 export const STATS_LOG_EVERY_TICKS = 100;
+/** D9: the next round starts this long after the first "play again" press, ready or not. */
+export const REMATCH_WINDOW_MS = 15_000;
 
 /**
  * One Durable Object = one room (`idFromName(roomId)`).
@@ -57,6 +76,19 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   private readonly stats = new TickStats();
   /** D33: next join id. Persisted, so a session number is never handed out twice, even after an eviction. */
   private nextSession = 1;
+  /**
+   * The `roundEnd` of the round that just finished, while its end screen is up: replayed to anyone
+   * who joins meanwhile. Also stored under `roundEnd`, so the end screen survives an eviction.
+   */
+  private roundEnd: RoundEndEvent | undefined;
+  /**
+   * D9: epoch ms at which the next round starts whether everyone is ready or not; 0 = nobody has
+   * pressed yet, no countdown. The DO alarm is set to this very time (it is what outlives an
+   * eviction); the value itself is rebuilt from the alarm.
+   */
+  private rematchDeadline = 0;
+  /** True while a rematch is being set up (an await in the middle): a second trigger does nothing. */
+  private restarting = false;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -66,6 +98,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       if (!first) return;
       this.room = attachmentOf(first.ws).room;
       this.seedCache = await this.seed();
+      await this.recoverRound();
       this.startLoop();
     });
   }
@@ -114,28 +147,29 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       }
       case 'rematch':
         if (!attachmentOf(ws).joined) return this.sendError(ws, 'BAD_MESSAGE', 'join first');
-        // rematch: BE-41
-        return;
+        return this.rematch(ws);
     }
   }
 
-  override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
-    this.leave(ws);
-    try {
-      ws.close(code === 1005 ? 1000 : code, reason);
-    } catch {
-      // already closed
-    }
+  override async webSocketClose(ws: WebSocket, _code: number, _reason: string): Promise<void> {
+    // The socket is already closing; re-closing it from here races the cleanup path and can
+    // leave the room in a stale joined state during a fast leave->join sequence.
+    const left = this.leave(ws);
+    if (left) await this.rematchAfterLeave();
   }
 
   /** Treated like a close: the player leaves and the others are told. */
   override async webSocketError(ws: WebSocket, _error?: unknown): Promise<void> {
-    this.leave(ws);
-    try {
-      ws.close(1011, 'error');
-    } catch {
-      // already closed
-    }
+    // Same here: the runtime has already signalled the socket is broken; closing it again is not needed.
+    const left = this.leave(ws);
+    if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'error');
+    if (left) await this.rematchAfterLeave();
+  }
+
+  /** D9 / BE-41: the DO alarm is the rematch deadline. Safe to deliver twice or after the round restarted. */
+  override async alarm(): Promise<void> {
+    if (!this.state?.result || this.players().length === 0) return;
+    await this.startRematch();
   }
 
   /** Everyone who has joined (sorted by playerId), rebuilt from the sockets Cloudflare holds for us. */
@@ -144,7 +178,13 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     for (const ws of this.ctx.getWebSockets()) {
       const a = attachmentOf(ws);
       if (a.joined)
-        players.push({ ws, playerId: a.playerId, nickname: a.nickname, session: a.session });
+        players.push({
+          ws,
+          playerId: a.playerId,
+          nickname: a.nickname,
+          session: a.session,
+          ready: a.ready === true,
+        });
     }
     return players.sort((x, y) => x.playerId.localeCompare(y.playerId));
   }
@@ -160,6 +200,8 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       return;
     }
 
+    // decided now, before the first await: a tick in between would already count the newcomer
+    const startOver = this.unplayed();
     // one id per join (D33), taken synchronously so two joins can never share it
     const session = this.nextSession++;
     void this.ctx.storage.put('nextSession', this.nextSession);
@@ -181,12 +223,33 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       send(ws, { v, t: 'event', kind: 'playerJoined', playerId: p.playerId, nickname: p.nickname });
     }
     this.broadcast({ v, t: 'event', kind: 'playerJoined', playerId, nickname }, ws);
+    if (startOver) await this.startRound(randomSeed());
+    else this.replayEndScreen(ws);
     this.startLoop();
   }
 
-  private leave(ws: WebSocket): void {
+  /**
+   * True when the round on the board was never a contest and is over for its only player: they
+   * timed out alone, or died alone (D32). A second player then gets a fresh round together with
+   * them, instead of a frozen room, or a win handed to the newcomer on the first tick.
+   */
+  private unplayed(): boolean {
+    const s = this.state;
+    if (!s || s.contested || s.players.length === 0) return false;
+    return s.result !== undefined || s.players.every((p) => !p.alive);
+  }
+
+  /** Someone joins while the end screen is up: they get the same `roundEnd` (and countdown) the others saw. */
+  private replayEndScreen(ws: WebSocket): void {
+    if (!this.roundEnd) return;
+    send(ws, this.roundEnd);
+    if (this.rematchDeadline !== 0) send(ws, this.rematchStatus());
+  }
+
+  /** Returns true when a player left (a socket that never joined has nothing to remove). */
+  private leave(ws: WebSocket): boolean {
     const a = attachmentOf(ws);
-    if (!a.joined) return;
+    if (!a.joined) return false;
     ws.serializeAttachment({ joined: false, room: a.room } satisfies Attachment);
     this.queue.remove(a.playerId);
     // drop the leaver from the game state now, not on the next tick: someone who joins into the
@@ -202,6 +265,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     const remaining = this.players().length;
     this.kvSync()?.update(remaining);
     if (remaining === 0) this.stopLoop();
+    return true;
   }
 
   /** KV lobby sync for this room (fire-and-forget: never awaited, so it cannot slow a join or a tick). */
@@ -228,15 +292,22 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   /**
    * Start a new round with `seed` for everyone in the room: new board, everyone alive at their
    * spawn, then `roundStart { seed, grid }` (D8) to all. The caller picks the seed
-   * (BE-41 calls this when the rematch is on; `game/` may not use `Math.random`).
+   * (the rematch calls this; `game/` may not use `Math.random`).
    * Does nothing in an empty room — nobody to play, and no loop must be armed for it.
+   *
+   * Order matters for crash recovery: the new seed is stored and the old end screen deleted in ONE
+   * transaction, before anything is announced; the swap + broadcast after it is one synchronous
+   * step, so no tick can send a snapshot of the new round before `roundStart`. If the DO dies in
+   * between, `recoverRound` starts the stored seed and announces it when it wakes up.
    */
   async startRound(seed: number): Promise<void> {
     if (this.players().length === 0) return;
     seed >>>= 0; // same uint32 as `GameState.seed` / `welcome.seed`
-    // persist first (a hibernation restart rebuilds from this seed); the swap + broadcast below
-    // is one synchronous step, so no tick can send a snapshot of the new round before roundStart
-    await this.ctx.storage.put('seed', seed);
+    await this.ctx.storage.transaction(async (txn) => {
+      await txn.put('seed', seed);
+      await txn.delete('roundEnd');
+    });
+    await this.ctx.storage.deleteAlarm();
     const players = this.players();
     if (players.length === 0) return;
     const { state, events } = newRound(
@@ -247,6 +318,107 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     this.seedCache = state.seed;
     this.state = state;
     this.queue.clear();
+    this.roundEnd = undefined;
+    this.clearReady(players);
+    for (const e of events) this.broadcast(e);
+  }
+
+  // ── rematch (D9) ──────────────────────────────────────────────────────────
+  // Who can start a round: nobody directly. A client can only say `rematch` (ready), and only
+  // while the end screen is up; the round starts when every player in the room is ready, or when
+  // the alarm fires REMATCH_WINDOW_MS after the first press. The seed is always picked here.
+
+  private async rematch(ws: WebSocket): Promise<void> {
+    const a = attachmentOf(ws);
+    if (!a.joined || !this.state?.result) return; // no end screen: a stale or early press, ignore
+    if (a.ready) return send(ws, this.rematchStatus()); // pressed already: repeat the status, change nothing
+    ws.serializeAttachment({ ...a, ready: true } satisfies Attachment);
+    if (this.everyoneReady()) return this.startRematch();
+    if (this.rematchDeadline === 0) {
+      this.rematchDeadline = Date.now() + REMATCH_WINDOW_MS;
+      await this.ctx.storage.setAlarm(this.rematchDeadline);
+    }
+    this.broadcast(this.rematchStatus());
+  }
+
+  /** Starts the next round of a finished one. Idempotent: a second call while one runs, or after it ran, does nothing. */
+  private async startRematch(): Promise<void> {
+    if (this.restarting || !this.state?.result) return;
+    this.restarting = true;
+    try {
+      await this.startRound(randomSeed());
+    } finally {
+      this.restarting = false;
+    }
+  }
+
+  /** Someone left during the end screen: their press is gone, so re-check who is ready. */
+  private async rematchAfterLeave(): Promise<void> {
+    if (this.rematchDeadline === 0 || !this.state?.result) return; // nobody had pressed
+    const players = this.players();
+    if (players.length === 0) return; // empty room: `stopLoop` already dropped the countdown
+    const ready = players.filter((p) => p.ready).length;
+    if (ready === players.length) return this.startRematch();
+    if (ready === 0) {
+      // the only ones who wanted a rematch are gone: no countdown until somebody presses again
+      this.rematchDeadline = 0;
+      await this.ctx.storage.deleteAlarm();
+    }
+    this.broadcast(this.rematchStatus());
+  }
+
+  private rematchStatus(): ServerMessage {
+    return {
+      v,
+      t: 'event',
+      kind: 'rematchStatus',
+      ready: this.players()
+        .filter((p) => p.ready)
+        .map((p) => p.playerId),
+      deadline: this.rematchDeadline,
+    };
+  }
+
+  private everyoneReady(): boolean {
+    const players = this.players();
+    return players.length > 0 && players.every((p) => p.ready);
+  }
+
+  private clearReady(players: readonly Player[]): void {
+    this.rematchDeadline = 0;
+    for (const p of players) {
+      const a = attachmentOf(p.ws);
+      if (a.joined && a.ready)
+        p.ws.serializeAttachment({ ...a, ready: false } satisfies Attachment);
+    }
+  }
+
+  /**
+   * The DO woke up with people still connected (deploy / crash): the game state lived in memory
+   * only, so it is rebuilt here. Two cases:
+   * - the end screen was up (`roundEnd` stored): bring it back frozen, with the rematch countdown
+   *   still running (the alarm and the sockets' ready flags survived), no announcement needed;
+   * - mid-round, or a rematch cut short between saving the seed and announcing it: start a round
+   *   from the stored seed and tell everyone with `roundStart`, or clients would keep drawing the old board.
+   */
+  private async recoverRound(): Promise<void> {
+    const players = this.players();
+    const seed = this.seedCache ?? 0;
+    const { state, events } = newRound(
+      seed,
+      players.map((p) => p.playerId),
+      sessionsOf(players),
+    );
+    const ended = await this.ctx.storage.get<RoundEndEvent>('roundEnd');
+    if (ended) {
+      this.state = { ...state, result: { winner: ended.winner, reason: ended.reason } };
+      this.roundEnd = ended;
+      this.rematchDeadline = (await this.ctx.storage.getAlarm()) ?? 0;
+      return;
+    }
+    this.state = state;
+    this.clearReady(players);
+    await this.ctx.storage.deleteAlarm();
     for (const e of events) this.broadcast(e);
   }
 
@@ -261,8 +433,24 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     this.loop = null;
     this.state = undefined;
     this.queue.clear();
+    this.forgetEndScreen();
     if (this.stats.total > 0) this.logStats('tick-stats-final');
     this.stats.reset();
+  }
+
+  /** Keeps the `roundEnd` for people who join during the end screen, and across an eviction. */
+  private rememberEndScreen(end: RoundEndEvent): void {
+    this.roundEnd = end;
+    void this.ctx.storage.put('roundEnd', end).catch(logFailure('round-end-save'));
+  }
+
+  /** An empty room keeps no end screen and no rematch countdown (no alarm may outlive the last player). */
+  private forgetEndScreen(): void {
+    if (this.roundEnd === undefined && this.rematchDeadline === 0) return;
+    this.roundEnd = undefined;
+    this.rematchDeadline = 0;
+    void this.ctx.storage.deleteAlarm().catch(logFailure('rematch-alarm-delete'));
+    void this.ctx.storage.delete('roundEnd').catch(logFailure('round-end-delete'));
   }
 
   private tick(): void {
@@ -277,6 +465,8 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       const { state, events } = simulate(this.syncPlayers(players), this.queue.drain());
       this.state = state;
       for (const e of events) this.broadcast(e);
+      const end = events.find((e): e is RoundEndEvent => e.kind === 'roundEnd');
+      if (end) this.rememberEndScreen(end);
       for (const p of players) send(p.ws, toSnapshot(state, p.playerId));
     } catch (error) {
       console.error(JSON.stringify({ msg: 'tick-failed', error: String(error) }));
@@ -321,12 +511,18 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   private async seed(): Promise<number> {
     let seed = await this.ctx.storage.get<number>('seed');
     if (seed === undefined) {
-      seed = crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
+      seed = randomSeed();
       await this.ctx.storage.put('seed', seed);
     }
     return seed;
   }
 }
+
+/** A new round's seed, picked here and never by a client (`game/` may not use randomness). */
+const randomSeed = (): number => crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
+
+const logFailure = (msg: string) => (error: unknown) =>
+  console.error(JSON.stringify({ msg, error: String(error) }));
 
 const sessionsOf = (players: readonly Player[]) =>
   new Map(players.map((p) => [p.playerId, p.session] as const));

@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { AUDIO_FILES } from '../audio/sfx';
 import { failedRequiredAssets } from '../view/bootAssets';
 import { CANVAS_HEIGHT_PX, CANVAS_WIDTH_PX, loadingBarFill, TILE_SIZE } from '../view/layout';
 import { FACINGS, WALK_FRAMES, walkAnimKey } from '../view/playerAnim';
@@ -62,9 +63,14 @@ export class BootScene extends Phaser.Scene {
       });
     }
     this.load.image(AssetKey.Marker, 'sprites/marker.png');
+    // sound is optional: a file that fails to load only means that sound stays silent (see create)
+    for (const file of AUDIO_FILES) this.load.audio(file.key, file.urls);
   }
 
   create(): void {
+    const silent = AUDIO_FILES.filter((f) => this.failedKeys.has(f.key)).map((f) => f.key);
+    if (silent.length > 0)
+      console.warn('[audio] failed to load, these sounds stay silent:', silent);
     const failed = failedRequiredAssets(this.failedKeys, REQUIRED_ASSETS);
     if (failed.length === 0) {
       // only after every required sheet loaded: an anim made from a failed sheet has no frames and `exists` would block a later retry

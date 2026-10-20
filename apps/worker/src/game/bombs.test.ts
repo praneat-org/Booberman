@@ -199,8 +199,9 @@ describe('flames', () => {
     expect(flameTiles(state)).toEqual(tilesOf(3, 4, 5, 6)(1));
     expect(state.grid[1 * GRID_WIDTH + 3]).toBe('.');
     expect(state.grid[1 * GRID_WIDTH + 6]).toBe('.');
-    expect(events.map((e) => e.kind)).toEqual(['boxDestroyed', 'boxDestroyed']);
-    expect(events).toMatchObject([
+    const broken = events.filter((e) => e.kind === 'boxDestroyed');
+    expect(broken).toHaveLength(2);
+    expect(broken).toMatchObject([
       { x: 3, y: 1 },
       { x: 6, y: 1 },
     ]);

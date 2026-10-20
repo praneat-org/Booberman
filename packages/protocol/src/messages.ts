@@ -127,14 +127,89 @@ export const RoundStartEvent = z.object({
  */
 export const RoundEndReason = z.enum(['lastAlive', 'allDead', 'timeout']);
 export type RoundEndReason = z.infer<typeof RoundEndReason>;
-/** BE-39: the round is over. `winner` is `null` for a draw (always present, never omitted). */
+
+/**
+ * Why a player died, decided on the server by the credit table of CAR-3798 (first match wins):
+ * `curse` = they carried a curse someone else gave them (credit to that someone), `ghost` / `kick`
+ * = the flame came from a ghost's bomb / a kicked bomb (reserved: BE-46 / BE-45 do not send them
+ * yet), `bomb` = a normal bomb, `self` = the credit fell on the victim themselves (killer = victim).
+ */
+export const KillCause = z.enum(['curse', 'ghost', 'kick', 'bomb', 'self']);
+export type KillCause = z.infer<typeof KillCause>;
+
+/**
+ * Round titles (ฉายา), in the order the end screen lists them. The Thai names are in `TITLE_LABELS`.
+ * `backstabber` (kick kills) and `haunter` (ghost kills) can only be earned once BE-45 / BE-46 land.
+ */
+export const TitleId = z.enum(['spreader', 'backstabber', 'haunter', 'selfKiller', 'troll']);
+export type TitleId = z.infer<typeof TitleId>;
+export const TITLE_LABELS: Readonly<Record<TitleId, string>> = {
+  spreader: 'ผู้แพร่เชื้อ',
+  backstabber: 'จอมแทงข้างหลัง',
+  haunter: 'ผีดุ',
+  selfKiller: 'ฆ่าตัวเองเก่ง',
+  troll: 'ตัวตึงสายเกรียน',
+};
+
+const Count = z.number().int().min(0);
+/**
+ * One player's round in the end screen table (BE-41). Names are the D1 columns of CAR-3799 in
+ * camelCase. `kills` counts other players only (a self-kill is in `deaths` and `selfKills`, not here).
+ */
+export const PlayerRoundStats = z.object({
+  id: PlayerId,
+  kills: Count,
+  deaths: Count,
+  selfKills: Count,
+  curseKills: Count,
+  /** Curses this player passed on by contact. */
+  transfers: Count,
+  /** แต้มเกรียน, summed by the server from the credit table (the values live in the worker's `GameConfig.trollPoints`). */
+  trollPoints: Count,
+});
+/**
+ * A title and everyone who holds it. Ties share the title (every player on the highest value);
+ * a title nobody earned (value 0) is not sent at all. `value` is the score they tied on.
+ */
+export const RoundTitle = z.object({
+  title: TitleId,
+  players: z.array(PlayerId).min(1).max(MAX_PLAYERS_PER_ROOM),
+  value: z.number().int().min(1),
+});
+
+export type PlayerRoundStats = z.infer<typeof PlayerRoundStats>;
+export type RoundTitle = z.infer<typeof RoundTitle>;
+
+/**
+ * BE-39 / BE-41: the round is over. `winner` is `null` for a draw (always present, never omitted).
+ * `stats` = one row per player still in the room, already sorted for the end screen (แต้มเกรียน high
+ * to low, then kills high to low, deaths low to high, then id); `titles` in the `TitleId` order.
+ */
 export const RoundEndEvent = z.object({
   ...event,
   kind: z.literal('roundEnd'),
   winner: PlayerId.nullable(),
   reason: RoundEndReason,
+  stats: z.array(PlayerRoundStats).max(MAX_PLAYERS_PER_ROOM),
+  titles: z.array(RoundTitle).max(TitleId.options.length),
 });
-/** D9: who is ready for a rematch and when the round starts anyway (epoch ms). */
+/**
+ * BE-41: a player died. `killer` is the player who gets the credit (own id for `self`), or `null`
+ * when the credit belongs to someone who has left the room (D33: counts for nobody, still a death).
+ * The field is called `cause`, not `kind`: `kind` is what tells events apart.
+ */
+export const KillEvent = z.object({
+  ...event,
+  kind: z.literal('kill'),
+  killer: PlayerId.nullable(),
+  victim: PlayerId,
+  cause: KillCause,
+});
+/**
+ * D9: who is ready for a rematch and when the round starts anyway (epoch ms). `deadline` is 0 while
+ * nobody is ready (no countdown running). Sent when someone presses, and when someone who pressed
+ * leaves; the start itself is announced by `roundStart`.
+ */
 export const RematchStatusEvent = z.object({
   ...event,
   kind: z.literal('rematchStatus'),
@@ -153,13 +228,14 @@ export const PlayerLeftEvent = z.object({
   kind: z.literal('playerLeft'),
   playerId: PlayerId,
 });
-/** Add new kinds here (kill, …) in the issues that need them. */
+/** Add new kinds here in the issues that need them. */
 export const EventMessage = z.discriminatedUnion('kind', [
   PlayerJoinedEvent,
   PlayerLeftEvent,
   BoxDestroyedEvent,
   RoundStartEvent,
   RoundEndEvent,
+  KillEvent,
   RematchStatusEvent,
 ]);
 

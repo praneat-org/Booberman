@@ -1,6 +1,6 @@
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import type { ServerMessage } from '@booberman/protocol';
+import type { PlayerRoundStats, ServerMessage } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
 import type { GameState } from '../src/game';
 import type { RoomDO } from '../src/room/RoomDO';
@@ -12,6 +12,17 @@ const roundEnd = (m: ServerMessage): m is Event<'roundEnd'> =>
   m.t === 'event' && m.kind === 'roundEnd';
 const roundStart = (m: ServerMessage): m is Event<'roundStart'> =>
   m.t === 'event' && m.kind === 'roundStart';
+/** One row of the `roundEnd` table: every counter 0 unless the test says otherwise. */
+const row = (id: string, counts: Partial<Omit<PlayerRoundStats, 'id'>> = {}): PlayerRoundStats => ({
+  id,
+  kills: 0,
+  deaths: 0,
+  selfKills: 0,
+  curseKills: 0,
+  transfers: 0,
+  trollPoints: 0,
+  ...counts,
+});
 const snapshots = (c: Client) =>
   c.received.filter((m): m is Extract<ServerMessage, { t: 'snapshot' }> => m.t === 'snapshot');
 
@@ -37,7 +48,16 @@ describe('a 2-player room plays a round to the end (BE-39)', () => {
 
     const endA = await a.next(roundEnd);
     const endB = await b.next(roundEnd);
-    expect(endA).toEqual({ v, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' });
+    // p1's bomb killed p2: the table and titles ride on the same event
+    expect(endA).toEqual({
+      v,
+      t: 'event',
+      kind: 'roundEnd',
+      winner: 'p1',
+      reason: 'lastAlive',
+      stats: [row('p1', { kills: 1, trollPoints: 1 }), row('p2', { deaths: 1 })],
+      titles: [{ title: 'troll', players: ['p1'], value: 1 }],
+    });
     expect(endB).toEqual(endA);
     // sent once, and the snapshots show who died
     await new Promise((r) => setTimeout(r, 200));
@@ -91,7 +111,16 @@ describe('a player leaving mid-round through the real RoomDO (BE-39, D32 item 1)
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     b.close();
     const end = await a.next(roundEnd);
-    expect(end).toEqual({ v, t: 'event', kind: 'roundEnd', winner: 'p1', reason: 'lastAlive' });
+    // p2 left before the end (D33): only p1 is in the table, nobody scored
+    expect(end).toEqual({
+      v,
+      t: 'event',
+      kind: 'roundEnd',
+      winner: 'p1',
+      reason: 'lastAlive',
+      stats: [row('p1')],
+      titles: [],
+    });
     await new Promise((r) => setTimeout(r, 200));
     expect(a.received.filter(roundEnd)).toHaveLength(1);
     a.close();

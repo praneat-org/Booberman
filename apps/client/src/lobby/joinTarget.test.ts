@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { resolveEntry } from './entryRoute';
-import { roomIdFromPath, roomPath, roomShareUrl } from './joinTarget';
+import {
+  joinFromLocation,
+  roomIdFromPath,
+  roomPath,
+  roomShareUrl,
+  roomUrlWithoutNickname,
+} from './joinTarget';
 
 describe('roomIdFromPath', () => {
   it('accepts /room/<valid id>, with optional slash and any case', () => {
@@ -41,5 +47,47 @@ describe('roomShareUrl', () => {
       'http://localhost:5173/room/abc123',
     );
     expect(roomShareUrl('https://booberman.example', 'xyz789')).not.toContain('?');
+  });
+});
+
+describe('roomUrlWithoutNickname', () => {
+  it('removes nick while retaining debug and other query parameters', () => {
+    expect(
+      roomUrlWithoutNickname({
+        pathname: '/room/abc123',
+        search: '?debug=1&nick=Mint&mode=fast',
+      }),
+    ).toBe('/room/abc123?debug=1&mode=fast');
+  });
+
+  it('removes every nick parameter and retains the URL hash', () => {
+    expect(
+      roomUrlWithoutNickname({
+        pathname: '/room/abc123/',
+        search: '?nick=Mint&debug=1&nick=Other',
+        hash: '#game',
+      }),
+    ).toBe('/room/abc123/?debug=1#game');
+  });
+
+  it('does not add a query string when the URL has no other parameters', () => {
+    expect(roomUrlWithoutNickname({ pathname: '/room/abc123', search: '?nick=Mint' })).toBe(
+      '/room/abc123',
+    );
+  });
+});
+
+describe('joinFromLocation', () => {
+  it('uses the remembered nickname when GameScene skips the lobby in mock mode', () => {
+    expect(joinFromLocation({ pathname: '/', search: '?mock=1' }, 'มิ้นท์', () => 0)).toEqual({
+      roomId: 'devroom',
+      nickname: 'มิ้นท์',
+    });
+  });
+
+  it('uses the valid query nickname before the remembered nickname', () => {
+    expect(
+      joinFromLocation({ pathname: '/room/abc123', search: '?mock=1&nick=Bo' }, 'มิ้นท์'),
+    ).toEqual({ roomId: 'abc123', nickname: 'Bo' });
   });
 });

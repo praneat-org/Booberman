@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe('MockTransport', () => {
-  it('emits welcome, playerJoined for everyone, then snapshots; all pass parseServerMessage', () => {
+  it('emits welcome, playerJoined for the bots, then snapshots; all pass parseServerMessage', () => {
     const t = new MockTransport({ bots: 3 });
     const got = collect(t);
     t.connect();
@@ -41,13 +41,28 @@ describe('MockTransport', () => {
     t.disconnect();
 
     expect(got.welcome).toHaveLength(1);
-    expect(got.events).toHaveLength(4);
+    expect(got.events).toHaveLength(3);
     expect(got.snaps).toHaveLength(40);
     for (const msg of got.raw) {
       const r = parseServerMessage(JSON.parse(JSON.stringify(msg)));
       expect(r.ok).toBe(true);
     }
     expect(got.snaps[0]?.players.map((p) => p.id)).toEqual(['p1', 'p2', 'p3', 'p4']);
+  });
+
+  it('does not announce our own join back to us, like the real server (D17)', () => {
+    const t = new MockTransport({ bots: 3 });
+    const got = collect(t);
+    t.connect();
+    t.disconnect();
+    expect(got.welcome[0]).toMatchObject({ playerId: 'p1' });
+    expect(
+      got.events.map((e) => e as { kind?: string; playerId?: string; nickname?: string }),
+    ).toEqual([
+      { v: PROTOCOL_VERSION, t: 'event', kind: 'playerJoined', playerId: 'p2', nickname: 'bot1' },
+      { v: PROTOCOL_VERSION, t: 'event', kind: 'playerJoined', playerId: 'p3', nickname: 'bot2' },
+      { v: PROTOCOL_VERSION, t: 'event', kind: 'playerJoined', playerId: 'p4', nickname: 'bot3' },
+    ]);
   });
 
   it('clamps bot count to 1..3', () => {
@@ -174,6 +189,133 @@ describe('MockTransport', () => {
     t.disconnect();
   });
 
+  describe('session start order (FE-29)', () => {
+    /** What `collect` saw, as short labels in arrival order. */
+    const labels = (raw: unknown[]) =>
+      raw.map((m) => {
+        const msg = m as { t: string; kind?: string; playerId?: string; tick?: number };
+        if (msg.t === 'welcome') return 'welcome';
+        if (msg.t === 'event') return `${msg.kind}:${msg.playerId}`;
+        return `${msg.t}:${msg.tick}`;
+      });
+
+    it('delivers welcome before every playerJoined and snapshot, with latency 150 / jitter 50', () => {
+      // `setTimeout` truncates to whole ms and the clock is whole ms, so two messages scheduled in
+      // neighbouring milliseconds can fire in swapped order. A clock that runs ahead of the timers
+      // makes that happen every time instead of 4 runs in 30.
+      for (let seed = 1; seed <= 30; seed++) {
+        vi.useFakeTimers();
+        let skew = 0;
+        const t = new MockTransport({
+          bots: 3,
+          seed,
+          latencyMs: 150,
+          jitterMs: 50,
+          clock: () => Date.now() + skew++,
+        });
+        const got = collect(t);
+        t.connect();
+        vi.advanceTimersByTime(400); // the first 4 ticks run on the real interval
+        t.disconnect();
+        vi.useRealTimers();
+
+        const order = labels(got.raw);
+        const firstSnapshot = order.findIndex((l) => l.startsWith('snapshot:'));
+        expect(firstSnapshot, `seed ${seed}: got snapshots`).toBeGreaterThan(0);
+        expect(order[0], `seed ${seed}`).toBe('welcome');
+        const joins = order.slice(1, firstSnapshot);
+        expect(
+          joins.every((l) => l.startsWith('playerJoined:')),
+          `seed ${seed}`,
+        ).toBe(true);
+        expect(joins, `seed ${seed}`).toEqual(
+          expect.arrayContaining(['playerJoined:p2', 'playerJoined:p3', 'playerJoined:p4']),
+        );
+        expect(
+          order.slice(firstSnapshot).every((l) => l.startsWith('snapshot:')),
+          `seed ${seed}`,
+        ).toBe(true);
+      }
+    });
+
+    it('keeps the order of everything else too: snapshots by tick, events where they were sent', () => {
+      vi.useFakeTimers();
+      let skew = 0;
+      const t = new MockTransport({
+        bots: 3,
+        seed: 4,
+        latencyMs: 150,
+        jitterMs: 50,
+        clock: () => Date.now() + skew++,
+      });
+      const got = collect(t);
+      t.connect();
+      for (let i = 0; i < 60; i++) t.step();
+      vi.advanceTimersByTime(1000);
+      const ticks = got.snaps.map((s) => s.tick);
+      expect(ticks).toEqual([...ticks].sort((a, b) => a - b));
+      expect(labels(got.raw)[0]).toBe('welcome');
+      t.disconnect();
+    });
+
+    it('drops what is still in flight on disconnect and starts the next session with welcome again', () => {
+      vi.useFakeTimers();
+      const t = new MockTransport({ bots: 1, latencyMs: 100, jitterMs: 40 });
+      const got = collect(t);
+      t.connect();
+      t.disconnect();
+      vi.advanceTimersByTime(1000);
+      expect(got.raw).toEqual([]);
+      t.connect();
+      vi.advanceTimersByTime(1000);
+      expect(labels(got.raw)[0]).toBe('welcome');
+      t.disconnect();
+    });
+
+    it('a reconnect on the same instance times welcome from now, not from the dropped session', () => {
+      // The due time of the last message of a dropped session used to survive `disconnect()`, so
+      // the next welcome waited for the slowest message of the old session (up to `jitterMs` late).
+      // Reference = an instance whose `out` line has no history. `ping` draws one jitter value, as
+      // does each of the two messages `connect()` queues here (welcome + the one bot's join), so
+      // both instances sit at the same point of the jitter stream and the welcome has to land at
+      // the same instant. If the draws ever stop lining up this fails too, it cannot pass by luck.
+      const opts = { bots: 1, latencyMs: 150, jitterMs: 50, clock: () => Date.now() };
+      /** Connects, lets the fake clock run past the largest possible delay, returns when welcome landed. */
+      const welcomeLag = (t: MockTransport): number | undefined => {
+        const start = Date.now();
+        let lag: number | undefined;
+        t.onWelcome(() => {
+          lag ??= Date.now() - start;
+        });
+        t.connect();
+        vi.advanceTimersByTime(opts.latencyMs + opts.jitterMs + 50);
+        t.disconnect();
+        return lag;
+      };
+
+      for (let seed = 1; seed <= 30; seed++) {
+        vi.useFakeTimers();
+
+        const reused = new MockTransport({ ...opts, seed });
+        reused.connect(); // session 1: welcome + playerJoined queued ...
+        reused.disconnect(); // ... and dropped, at the same instant we reconnect
+        const reusedLag = welcomeLag(reused);
+
+        const fresh = new MockTransport({ ...opts, seed });
+        fresh.ping(0);
+        fresh.ping(0);
+        fresh.disconnect(); // drops the two pings; the `out` line was never used
+        const freshLag = welcomeLag(fresh);
+
+        vi.useRealTimers();
+        expect(freshLag, `seed ${seed}: fresh welcome arrives`).toBeDefined();
+        expect(freshLag, `seed ${seed}: within latency + jitter`).toBeGreaterThanOrEqual(150);
+        expect(freshLag, `seed ${seed}: within latency + jitter`).toBeLessThanOrEqual(200);
+        expect(reusedLag, `seed ${seed}: same instant as a fresh line`).toBe(freshLag);
+      }
+    });
+  });
+
   it('unsubscribe stops callbacks', () => {
     const t = new MockTransport();
     const cb = vi.fn();
@@ -293,7 +435,8 @@ describe('MockTransport bombs (FE-15)', () => {
     flush();
     expect(roundStarts()).toBe(1);
     expect(me()?.alive).toBe(true);
-    expect(got.snaps.at(-1)?.bombs).toEqual([]);
+    // the bot may legitimately have placed its own bomb in the new round: only ours (at the spawn) must be missing
+    expect(got.snaps.at(-1)?.bombs.filter((b) => b.x === 1 && b.y === 1)).toEqual([]);
     t.disconnect();
   });
 
@@ -351,6 +494,185 @@ describe('MockTransport bombs (FE-15)', () => {
     for (const msg of got.raw) {
       expect(parseServerMessage(JSON.parse(JSON.stringify(msg))).ok).toBe(true);
     }
+    t.disconnect();
+  });
+});
+
+describe('MockTransport round end and item pickup (FE-18)', () => {
+  type Msg = { t: string; kind?: string; [k: string]: unknown };
+  type RoundStats = {
+    id: string;
+    kills: number;
+    deaths: number;
+    selfKills: number;
+    curseKills: number;
+    transfers: number;
+    trollPoints: number;
+  };
+  type RoundEnd = Msg & { kind: 'roundEnd'; stats: RoundStats[] };
+  const kindOf = (m: unknown) => (m as Msg).kind;
+
+  /** We bomb our own spawn and stand still: we die at tick 40 and the only bot is left. */
+  function suicide(seed = 7) {
+    const t = new MockTransport({ bots: 1, seed });
+    const got = collect(t);
+    t.connect();
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    return { t, got };
+  }
+
+  it('sends roundEnd once, before the snapshot in which the round ended, with the survivor as winner', () => {
+    const { t, got } = suicide();
+    for (let i = 0; i < 45; i++) t.step();
+    const ends = got.raw.filter((m) => kindOf(m) === 'roundEnd');
+    expect(ends).toHaveLength(1);
+    const end = ends[0] as { winner: string | null; reason: string };
+    const endIndex = got.raw.indexOf(ends[0]);
+    const after = got.raw
+      .slice(endIndex)
+      .find((m) => (m as Msg).t === 'snapshot') as SnapshotMessage;
+    const alive = after.players.filter((p) => p.alive).map((p) => p.id);
+    expect(alive.length).toBeLessThanOrEqual(1);
+    expect(end.winner).toBe(alive[0] ?? null);
+    expect(end.reason).toBe(alive.length === 1 ? 'lastAlive' : 'allDead');
+    // the snapshot before it still had two players alive
+    const before = got.raw.slice(0, endIndex).filter((m) => (m as Msg).t === 'snapshot');
+    expect((before.at(-1) as SnapshotMessage).players.filter((p) => p.alive)).toHaveLength(2);
+    t.disconnect();
+  });
+
+  it('tracks bomb kills and resets round stats when a new round starts', () => {
+    const t = new MockTransport({ bots: 1, seed: 7 });
+    const got = collect(t);
+    t.connect();
+    const players = (
+      t as unknown as {
+        players: { id: string; x: number; y: number; bot?: () => number }[];
+      }
+    ).players;
+    const bot = players[1];
+    if (!bot) throw new Error('expected one bot');
+    Object.assign(bot, { x: 2, y: 1, bot: undefined });
+
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    for (let i = 0; i < 40; i++) t.step();
+    const roundEnds = () => got.raw.filter((m) => kindOf(m) === 'roundEnd') as RoundEnd[];
+    expect(roundEnds()).toHaveLength(1);
+    expect(roundEnds()[0]?.stats).toEqual([
+      {
+        id: 'p1',
+        kills: 1,
+        deaths: 1,
+        selfKills: 1,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+      {
+        id: 'p2',
+        kills: 0,
+        deaths: 1,
+        selfKills: 0,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+    ]);
+
+    for (let i = 0; i < 60; i++) t.step();
+    t.send({ seq: 2, dir: 'none', bomb: true });
+    for (let i = 0; i < 40; i++) t.step();
+    expect(roundEnds()).toHaveLength(2);
+    expect(roundEnds()[1]?.stats).toEqual([
+      {
+        id: 'p1',
+        kills: 0,
+        deaths: 1,
+        selfKills: 1,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+      {
+        id: 'p2',
+        kills: 0,
+        deaths: 0,
+        selfKills: 0,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+    ]);
+    t.disconnect();
+  });
+
+  it('after roundEnd the state stands still (only the tick moves) and input is ignored, like the server', () => {
+    const { t, got } = suicide();
+    for (let i = 0; i < 41; i++) t.step();
+    const ended = got.snaps.at(-1) as SnapshotMessage;
+    t.send({ seq: 2, dir: 'right', bomb: true });
+    for (let i = 0; i < 20; i++) t.step();
+    const later = got.snaps.at(-1) as SnapshotMessage;
+    expect(later.tick).toBe(ended.tick + 20);
+    expect(later.players).toEqual(ended.players);
+    expect(later.bombs).toEqual(ended.bombs);
+    expect(later.flames).toEqual(ended.flames);
+    expect(got.raw.filter((m) => kindOf(m) === 'roundEnd')).toHaveLength(1);
+    t.disconnect();
+  });
+
+  it('starts the next round 60 ticks after the one that sent roundEnd, and that round is not frozen', () => {
+    const { t, got } = suicide();
+    const kinds = () => got.raw.map(kindOf);
+    for (let i = 0; i < 40 && !kinds().includes('roundEnd'); i++) t.step();
+    expect(kinds()).toContain('roundEnd');
+    // the tick that sent roundEnd is the first of the 60
+    for (let i = 0; i < 58; i++) t.step();
+    expect(kinds()).not.toContain('roundStart');
+    t.step();
+    expect(kinds()).toContain('roundStart');
+    t.step(); // roundStart goes out after the snapshot of its tick, so the next snapshot is the new round's
+    expect(got.snaps.at(-1)?.players.every((p) => p.alive)).toBe(true);
+    // the new round is not frozen
+    t.send({ seq: 2, dir: 'right', bomb: false });
+    for (let i = 0; i < 8; i++) t.step();
+    expect(got.snaps.at(-1)?.players[0]?.x).toBeGreaterThan(1);
+    t.disconnect();
+  });
+
+  it('an item leaves the floor only when a living player stands on its tile', () => {
+    const t = new MockTransport({ bots: 3, seed: 15 });
+    const got = collect(t);
+    t.connect();
+    for (let i = 0; i < 700; i++) t.step();
+    let prev: SnapshotMessage | undefined;
+    let pickups = 0;
+    for (const m of got.raw) {
+      if (kindOf(m) === 'roundStart') prev = undefined; // a new round clears the floor without a pickup
+      if ((m as Msg).t !== 'snapshot') continue;
+      const cur = m as SnapshotMessage;
+      for (const item of prev?.items ?? []) {
+        if (cur.items.some((i) => i.x === item.x && i.y === item.y)) continue;
+        pickups++;
+        const taker = cur.players.find(
+          (p) => p.alive && Math.round(p.x) === item.x && Math.round(p.y) === item.y,
+        );
+        expect(taker, `item at ${item.x},${item.y} vanished at tick ${cur.tick}`).toBeDefined();
+      }
+      prev = cur;
+    }
+    expect(pickups).toBeGreaterThan(0);
+    t.disconnect();
+  });
+
+  it('an item that nobody walks onto stays on the floor', () => {
+    const t = new MockTransport({ bots: 3, seed: 15 });
+    const got = collect(t);
+    t.connect();
+    for (let i = 0; i < 120; i++) t.step();
+    // by tick 120 a box has broken and dropped something that is still lying there
+    const seen = got.snaps.find((s) => s.items.length > 0);
+    expect(seen).toBeDefined();
     t.disconnect();
   });
 });

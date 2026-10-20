@@ -6,6 +6,7 @@ import {
 } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
 import { applyBoardEvent, applyWelcome } from './boardEvents';
+import { toHudView } from './hudView';
 import { RoundView } from './roundView';
 
 type Snapshot = Extract<ServerMessage, { t: 'snapshot' }>;
@@ -84,7 +85,7 @@ describe('board events and the round view', () => {
   it('welcome (also a new board) resets everything too', () => {
     const round = new RoundView(0);
     feed(round, busy(1, [p(5, 5)]));
-    applyWelcome({ grid: exampleGrid() }, round);
+    applyWelcome({ grid: exampleGrid(), playerId: 'p1' }, round, 'Hi');
     expect(round.latest).toBeUndefined();
     expect(round.drawable('p1').players).toHaveLength(0);
     feed(round, busy(2, [p(1, 1)]));
@@ -110,8 +111,47 @@ describe('roster (HUD nicknames)', () => {
     applyBoardEvent(joined('p1', 'a'), round);
     applyBoardEvent(exampleServerMessages.roundStart, round);
     expect(round.roster.nameOf('p1')).toBe('a');
-    applyWelcome({ grid: exampleGrid() }, round);
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'me');
     expect(round.roster.nameOf('p1')).toBeUndefined();
+  });
+
+  // FE-29 cause 1: the server never sends us our own playerJoined and `welcome` has no nickname,
+  // so the only place our name can come from is the one we joined with.
+  it('welcome puts our own nickname in the roster, under the id the server gave us', () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'มิ้นท์');
+    expect(round.roster.nameOf('p2')).toBe('มิ้นท์');
+    expect(round.roster.nameOf('p1')).toBeUndefined();
+  });
+
+  it('welcome still replaces the roster of the old connection; only our own name is set', () => {
+    const round = newRound();
+    applyBoardEvent(joined('p1', 'old'), round);
+    applyBoardEvent(joined('p2', 'gone'), round);
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'Hi');
+    expect(round.roster.nameOf('p1')).toBeUndefined();
+    expect(round.roster.nameOf('p2')).toBe('Hi');
+  });
+
+  it('joins replayed after welcome add the others next to our own name, roundStart keeps both', () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'Hi');
+    applyBoardEvent(joined('p1', 'Bob_2'), round);
+    applyBoardEvent(exampleServerMessages.roundStart, round);
+    expect(round.roster.nameOf('p1')).toBe('Bob_2');
+    expect(round.roster.nameOf('p2')).toBe('Hi');
+  });
+
+  it('the HUD card of ourselves shows the nickname, not the id', () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'Hi');
+    applyBoardEvent(joined('p1', 'Bob_2'), round);
+    feed(round, busy(1, [p(1, 1), { ...p(11, 1), id: 'p2' }]));
+    const cards = toHudView(round.latest, round.roster, 'p2').cards;
+    expect(cards.map((c) => [c.id, c.name, c.isSelf])).toEqual([
+      ['p1', 'Bob_2', false],
+      ['p2', 'Hi', true],
+    ]);
   });
 
   it('roundStart drops the old snapshot, so the HUD shows no stale cards or time', () => {
@@ -120,5 +160,68 @@ describe('roster (HUD nicknames)', () => {
     expect(round.latest).toBeDefined();
     applyBoardEvent(exampleServerMessages.roundStart, round);
     expect(round.latest).toBeUndefined();
+  });
+});
+
+describe('sounds follow the round view (FE-18)', () => {
+  /** Like `feed`, but returns the sounds that frame called for. */
+  const hear = (round: RoundView, snap: Snapshot) => {
+    round.applySnapshot(snap, snap.tick * 50);
+    return round.frame(snap.tick * 50);
+  };
+  const quiet = (tick: number, players: PlayerState[] = [p(1, 1)]): Snapshot => ({
+    ...exampleServerMessages.snapshot,
+    tick,
+    players,
+    bombs: [],
+    flames: [],
+    items: [],
+  });
+
+  it('frame() returns the sounds of the snapshot just drawn', () => {
+    const round = newRound();
+    expect(hear(round, quiet(1))).toEqual([]);
+    expect(hear(round, { ...quiet(2), bombs: [{ x: 3, y: 3, fuse: 40 }] })).toEqual(['bombPlace']);
+    expect(hear(round, { ...quiet(3), flames: [[3, 3]] })).toEqual(['explode']);
+  });
+
+  it('roundEnd with a winner plays win when the snapshot after the newest received is drawn', () => {
+    const round = newRound();
+    hear(round, quiet(10));
+    expect(applyBoardEvent(exampleServerMessages.roundEndWin, round)).toBe(false);
+    expect(round.frame(10 * 50)).toEqual([]);
+    expect(hear(round, quiet(11))).toEqual(['win']);
+    expect(hear(round, quiet(12))).toEqual([]);
+  });
+
+  it('a draw makes no win sound', () => {
+    for (const draw of [
+      exampleServerMessages.roundEndDraw,
+      exampleServerMessages.roundEndTimeout,
+    ]) {
+      const round = newRound();
+      hear(round, quiet(10));
+      applyBoardEvent(draw, round);
+      expect(hear(round, quiet(11))).toEqual([]);
+    }
+  });
+
+  it('roundStart and welcome reset the tracker: the old round vanishing is not heard, a waiting win is dropped', () => {
+    for (const reset of [
+      (r: RoundView) => applyBoardEvent(exampleServerMessages.roundStart, r),
+      (r: RoundView) => applyWelcome({ grid: exampleGrid(), playerId: 'p1' }, r, 'Hi'),
+    ]) {
+      const round = newRound();
+      hear(round, {
+        ...quiet(10),
+        bombs: [{ x: 3, y: 3, fuse: 5 }],
+        items: [{ x: 5, y: 1, kind: 'curse' }],
+      });
+      applyBoardEvent(exampleServerMessages.roundEndWin, round);
+      reset(round);
+      // a snapshot that, next to the old round's, would read as an explosion + a pickup + a win
+      expect(hear(round, { ...quiet(11), flames: [[3, 3]] })).toEqual([]);
+      expect(hear(round, quiet(12))).toEqual([]);
+    }
   });
 });
