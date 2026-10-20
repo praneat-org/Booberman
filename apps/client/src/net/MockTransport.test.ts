@@ -500,6 +500,16 @@ describe('MockTransport bombs (FE-15)', () => {
 
 describe('MockTransport round end and item pickup (FE-18)', () => {
   type Msg = { t: string; kind?: string; [k: string]: unknown };
+  type RoundStats = {
+    id: string;
+    kills: number;
+    deaths: number;
+    selfKills: number;
+    curseKills: number;
+    transfers: number;
+    trollPoints: number;
+  };
+  type RoundEnd = Msg & { kind: 'roundEnd'; stats: RoundStats[] };
   const kindOf = (m: unknown) => (m as Msg).kind;
 
   /** We bomb our own spawn and stand still: we die at tick 40 and the only bot is left. */
@@ -528,6 +538,71 @@ describe('MockTransport round end and item pickup (FE-18)', () => {
     // the snapshot before it still had two players alive
     const before = got.raw.slice(0, endIndex).filter((m) => (m as Msg).t === 'snapshot');
     expect((before.at(-1) as SnapshotMessage).players.filter((p) => p.alive)).toHaveLength(2);
+    t.disconnect();
+  });
+
+  it('tracks bomb kills and resets round stats when a new round starts', () => {
+    const t = new MockTransport({ bots: 1, seed: 7 });
+    const got = collect(t);
+    t.connect();
+    const players = (
+      t as unknown as {
+        players: { id: string; x: number; y: number; bot?: () => number }[];
+      }
+    ).players;
+    const bot = players[1];
+    if (!bot) throw new Error('expected one bot');
+    Object.assign(bot, { x: 2, y: 1, bot: undefined });
+
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    for (let i = 0; i < 40; i++) t.step();
+    const roundEnds = () => got.raw.filter((m) => kindOf(m) === 'roundEnd') as RoundEnd[];
+    expect(roundEnds()).toHaveLength(1);
+    expect(roundEnds()[0]?.stats).toEqual([
+      {
+        id: 'p1',
+        kills: 1,
+        deaths: 1,
+        selfKills: 1,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+      {
+        id: 'p2',
+        kills: 0,
+        deaths: 1,
+        selfKills: 0,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+    ]);
+
+    for (let i = 0; i < 60; i++) t.step();
+    t.send({ seq: 2, dir: 'none', bomb: true });
+    for (let i = 0; i < 40; i++) t.step();
+    expect(roundEnds()).toHaveLength(2);
+    expect(roundEnds()[1]?.stats).toEqual([
+      {
+        id: 'p1',
+        kills: 0,
+        deaths: 1,
+        selfKills: 1,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+      {
+        id: 'p2',
+        kills: 0,
+        deaths: 0,
+        selfKills: 0,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+    ]);
     t.disconnect();
   });
 

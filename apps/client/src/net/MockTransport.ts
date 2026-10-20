@@ -89,12 +89,20 @@ interface MockPlayer {
   alive: boolean;
   /** `bomb: true` is a one-shot (D27); consumed by the next tick. */
   wantsBomb: boolean;
+  kills: number;
+  deaths: number;
+  selfKills: number;
 }
 
 interface MockBomb {
   x: number;
   y: number;
   fuse: number;
+  owner: PlayerId;
+}
+
+interface MockFlame {
+  ttl: number;
   owner: PlayerId;
 }
 
@@ -151,7 +159,7 @@ export class MockTransport implements Transport {
   private grid = exampleGrid();
   private round = 0;
   private bombs: MockBomb[] = [];
-  private flames = new Map<string, number>();
+  private flames = new Map<string, MockFlame>();
   private items: { x: number; y: number; kind: 'curse' }[] = [];
   private deadTicks = 0;
   /** `roundEnd` was sent: like the server, the state stands still until the next round starts. */
@@ -314,9 +322,9 @@ export class MockTransport implements Transport {
 
   /** Count fuses down, explode (chain reaction), age flames, kill whoever stands in fire. */
   private burn(): void {
-    for (const [key, ttl] of this.flames) {
-      if (ttl <= 1) this.flames.delete(key);
-      else this.flames.set(key, ttl - 1);
+    for (const [key, flame] of this.flames) {
+      if (flame.ttl <= 1) this.flames.delete(key);
+      else this.flames.set(key, { ...flame, ttl: flame.ttl - 1 });
     }
     for (const b of this.bombs) b.fuse--;
     for (;;) {
@@ -326,7 +334,16 @@ export class MockTransport implements Transport {
       this.explode(next);
     }
     for (const p of this.players) {
-      if (p.alive && this.flames.has(`${Math.round(p.x)},${Math.round(p.y)}`)) p.alive = false;
+      if (!p.alive) continue;
+      const flame = this.flames.get(`${Math.round(p.x)},${Math.round(p.y)}`);
+      if (!flame) continue;
+      p.alive = false;
+      p.deaths++;
+      if (flame.owner === p.id) p.selfKills++;
+      else {
+        const owner = this.players.find((candidate) => candidate.id === flame.owner);
+        if (owner) owner.kills++;
+      }
     }
   }
 
@@ -353,9 +370,9 @@ export class MockTransport implements Transport {
       reason: alive.length === 1 ? 'lastAlive' : 'allDead',
       stats: this.players.map((p) => ({
         id: p.id,
-        kills: 0,
-        deaths: 0,
-        selfKills: 0,
+        kills: p.kills,
+        deaths: p.deaths,
+        selfKills: p.selfKills,
         curseKills: 0,
         transfers: 0,
         trollPoints: 0,
@@ -365,14 +382,14 @@ export class MockTransport implements Transport {
   }
 
   private explode(bomb: MockBomb): void {
-    this.flames.set(`${bomb.x},${bomb.y}`, FLAME_TICKS);
+    this.ignite(`${bomb.x},${bomb.y}`, bomb.owner);
     for (const [dx, dy] of Object.values(DELTA)) {
       for (let i = 1; i <= FLAME_RANGE; i++) {
         const x = bomb.x + dx * i;
         const y = bomb.y + dy * i;
         const tile = tileAt(this.grid, x, y);
         if (tile === undefined || tile === '#') break;
-        this.flames.set(`${x},${y}`, FLAME_TICKS);
+        this.ignite(`${x},${y}`, bomb.owner);
         if (tile === 'x') {
           this.breakBox(x, y);
           break;
@@ -384,6 +401,11 @@ export class MockTransport implements Transport {
     for (const other of this.bombs) {
       if (this.flames.has(`${other.x},${other.y}`)) other.fuse = 0;
     }
+  }
+
+  private ignite(key: string, owner: PlayerId): void {
+    const existing = this.flames.get(key);
+    this.flames.set(key, { ttl: FLAME_TICKS, owner: existing?.owner ?? owner });
   }
 
   private breakBox(x: number, y: number): void {
@@ -416,6 +438,9 @@ export class MockTransport implements Transport {
         walkDir: undefined,
         heldDir: 'none',
         wantsBomb: false,
+        kills: 0,
+        deaths: 0,
+        selfKills: 0,
       });
     }
     this.toClient({
@@ -438,6 +463,9 @@ export class MockTransport implements Transport {
       bot,
       alive: true,
       wantsBomb: false,
+      kills: 0,
+      deaths: 0,
+      selfKills: 0,
     };
   }
 
