@@ -179,6 +179,46 @@ describe('LobbyController join from list', () => {
   });
 });
 
+describe('LobbyController with an enter hook (the /room/:id screens)', () => {
+  function makeEnter(fetchFn: typeof fetch, storage = memoryStorage()) {
+    const clock = fakeTimers();
+    const navigate = vi.fn();
+    const enter = vi.fn();
+    const c = new LobbyController({ fetchFn, storage, navigate, enter, timers: clock.timers });
+    return { c, navigate, enter, storage };
+  }
+
+  it('joinRoom enters in place with the trimmed name and never navigates', () => {
+    const { c, navigate, enter, storage } = makeEnter(vi.fn() as never);
+    c.setNickname('  Mint  ');
+    c.joinRoom('abc123');
+    expect(enter).toHaveBeenCalledWith('abc123', 'Mint');
+    expect(navigate).not.toHaveBeenCalled();
+    expect(storage.data.get(NICKNAME_STORAGE_KEY)).toBe('Mint');
+    expect(c.state.navigating).toBe(true);
+    c.joinRoom('abc123'); // double press
+    expect(enter).toHaveBeenCalledTimes(1);
+  });
+
+  it('an invalid name shows its message and does not enter', () => {
+    const { c, enter } = makeEnter(vi.fn() as never);
+    c.setNickname('a b');
+    c.joinRoom('abc123');
+    expect(enter).not.toHaveBeenCalled();
+    expect(c.state.nicknameError).toContain('ช่องว่าง');
+    expect(c.state.navigating).toBe(false);
+  });
+
+  it('createRoom enters the newly created room in place', async () => {
+    const f = vi.fn().mockResolvedValue(json({ roomId: 'newone' }, { status: 201 }));
+    const { c, navigate, enter } = makeEnter(f as never);
+    c.setNickname('Bo');
+    await c.createRoom();
+    expect(enter).toHaveBeenCalledWith('newone', 'Bo');
+    expect(navigate).not.toHaveBeenCalled();
+  });
+});
+
 describe('LobbyController with storage that throws', () => {
   const blocked = {
     getItem: () => {

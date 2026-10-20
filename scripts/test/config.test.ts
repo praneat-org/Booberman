@@ -57,7 +57,7 @@ describe.each([
 
 // manifest.json is not in R2: it ships in the client build, so the static-assets rules decide its caching.
 describe('apps/client/public/_headers', () => {
-  const headers = read('apps/client/public/_headers');
+  const headers = read('apps/client/public/_headers').replace(/\r\n/g, '\n');
 
   it('revalidates everything by default and only long-caches /assets/*, so manifest.json is never immutable', () => {
     expect(headers).toMatch(/^\/\*\n\s+Cache-Control: no-cache$/m);
