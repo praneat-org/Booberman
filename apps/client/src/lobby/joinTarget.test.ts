@@ -70,6 +70,16 @@ describe('roomUrlWithoutNickname', () => {
     ).toBe('/room/abc123/?debug=1#game');
   });
 
+  it('updates the room path while preserving other query parameters and the hash', () => {
+    expect(
+      roomUrlWithoutNickname({
+        pathname: roomPath('new789'),
+        search: '?debug=1&nick=Mint&mode=fast',
+        hash: '#game',
+      }),
+    ).toBe('/room/new789?debug=1&mode=fast#game');
+  });
+
   it('does not add a query string when the URL has no other parameters', () => {
     expect(roomUrlWithoutNickname({ pathname: '/room/abc123', search: '?nick=Mint' })).toBe(
       '/room/abc123',

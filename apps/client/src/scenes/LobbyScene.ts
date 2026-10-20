@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { type EntryActions, EntryOverlay, type EntryScreen } from '../lobby/EntryOverlay';
 import { SERVER_REJECTED_NICKNAME_MESSAGE } from '../lobby/entryNotice';
 import { resolveEntry } from '../lobby/entryRoute';
-import { roomUrlWithoutNickname } from '../lobby/joinTarget';
+import { roomPath, roomUrlWithoutNickname } from '../lobby/joinTarget';
 import { LobbyController } from '../lobby/LobbyController';
 import { LobbyOverlay } from '../lobby/LobbyOverlay';
 import { loadNickname } from '../lobby/nicknameStore';
@@ -72,7 +72,12 @@ export class LobbyScene extends Phaser.Scene {
   /** Into the room in place. The URL becomes the plain link, with no `?nick=` (anyone could copy it). */
   private enterRoom(roomId: string, nickname: string): void {
     try {
-      window.history.replaceState(null, '', roomUrlWithoutNickname(window.location));
+      const { search, hash } = window.location;
+      window.history.replaceState(
+        null,
+        '',
+        roomUrlWithoutNickname({ pathname: roomPath(roomId), search, hash }),
+      );
     } catch {
       // the URL is cosmetic; entering the room is what matters
     }
