@@ -1,4 +1,6 @@
 import type { PlayerId } from '@booberman/protocol';
+import type { SfxName } from '../audio/sfx';
+import { SfxTracker } from '../audio/sfxTracker';
 import type { SnapshotMessage } from '../net/Transport';
 import { BoxField } from './boardView';
 import { toBombViews, toFlameViews, toItemViews } from './entityViews';
@@ -25,6 +27,8 @@ export class RoundView {
   readonly boxes = new BoxField();
   readonly animTracker = new PlayerAnimTracker();
   readonly buffer: SnapshotBuffer;
+  /** Which sounds the drawn snapshots call for (FE-18); compares each drawn snapshot with the one before. */
+  readonly sfx = new SfxTracker();
   /** Nicknames for the HUD. Per connection, not per round: only `resetSession` clears it. */
   readonly roster = new Roster();
   /** What is being drawn: the buffered snapshot at the render time, players interpolated. */
@@ -39,6 +43,7 @@ export class RoundView {
   reset(grid?: string): void {
     if (grid !== undefined) this.boxes.reset(grid);
     this.animTracker.reset();
+    this.sfx.reset();
     this.buffer.reset();
     this.latest = undefined;
     this.renderTick = undefined;
@@ -56,13 +61,17 @@ export class RoundView {
     this.buffer.push(msg, recvAt);
   }
 
-  /** Once per rendered frame: move `latest` to the render time (nothing before the first snapshot). */
-  frame(now: number): void {
+  /**
+   * Once per rendered frame: move `latest` to the render time (nothing before the first snapshot).
+   * Returns the sounds that the newly drawn snapshot calls for (usually none).
+   */
+  frame(now: number): SfxName[] {
     const sample = this.buffer.sample(now);
-    if (!sample) return;
+    if (!sample) return [];
     this.latest = { ...sample.base, players: sample.players };
     this.renderTick = sample.renderTick;
     this.playerAnims = this.animTracker.update(sample.players, sample.renderTick);
+    return this.sfx.observe(this.latest);
   }
 
   /** What may be on screen right now: nothing until the first snapshot of the current round. */

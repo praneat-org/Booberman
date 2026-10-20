@@ -435,7 +435,8 @@ describe('MockTransport bombs (FE-15)', () => {
     flush();
     expect(roundStarts()).toBe(1);
     expect(me()?.alive).toBe(true);
-    expect(got.snaps.at(-1)?.bombs).toEqual([]);
+    // the bot may legitimately have placed its own bomb in the new round: only ours (at the spawn) must be missing
+    expect(got.snaps.at(-1)?.bombs.filter((b) => b.x === 1 && b.y === 1)).toEqual([]);
     t.disconnect();
   });
 
@@ -493,6 +494,110 @@ describe('MockTransport bombs (FE-15)', () => {
     for (const msg of got.raw) {
       expect(parseServerMessage(JSON.parse(JSON.stringify(msg))).ok).toBe(true);
     }
+    t.disconnect();
+  });
+});
+
+describe('MockTransport round end and item pickup (FE-18)', () => {
+  type Msg = { t: string; kind?: string; [k: string]: unknown };
+  const kindOf = (m: unknown) => (m as Msg).kind;
+
+  /** We bomb our own spawn and stand still: we die at tick 40 and the only bot is left. */
+  function suicide(seed = 7) {
+    const t = new MockTransport({ bots: 1, seed });
+    const got = collect(t);
+    t.connect();
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    return { t, got };
+  }
+
+  it('sends roundEnd once, before the snapshot in which the round ended, with the survivor as winner', () => {
+    const { t, got } = suicide();
+    for (let i = 0; i < 45; i++) t.step();
+    const ends = got.raw.filter((m) => kindOf(m) === 'roundEnd');
+    expect(ends).toHaveLength(1);
+    const end = ends[0] as { winner: string | null; reason: string };
+    const endIndex = got.raw.indexOf(ends[0]);
+    const after = got.raw
+      .slice(endIndex)
+      .find((m) => (m as Msg).t === 'snapshot') as SnapshotMessage;
+    const alive = after.players.filter((p) => p.alive).map((p) => p.id);
+    expect(alive.length).toBeLessThanOrEqual(1);
+    expect(end.winner).toBe(alive[0] ?? null);
+    expect(end.reason).toBe(alive.length === 1 ? 'lastAlive' : 'allDead');
+    // the snapshot before it still had two players alive
+    const before = got.raw.slice(0, endIndex).filter((m) => (m as Msg).t === 'snapshot');
+    expect((before.at(-1) as SnapshotMessage).players.filter((p) => p.alive)).toHaveLength(2);
+    t.disconnect();
+  });
+
+  it('after roundEnd the state stands still (only the tick moves) and input is ignored, like the server', () => {
+    const { t, got } = suicide();
+    for (let i = 0; i < 41; i++) t.step();
+    const ended = got.snaps.at(-1) as SnapshotMessage;
+    t.send({ seq: 2, dir: 'right', bomb: true });
+    for (let i = 0; i < 20; i++) t.step();
+    const later = got.snaps.at(-1) as SnapshotMessage;
+    expect(later.tick).toBe(ended.tick + 20);
+    expect(later.players).toEqual(ended.players);
+    expect(later.bombs).toEqual(ended.bombs);
+    expect(later.flames).toEqual(ended.flames);
+    expect(got.raw.filter((m) => kindOf(m) === 'roundEnd')).toHaveLength(1);
+    t.disconnect();
+  });
+
+  it('starts the next round 60 ticks after the one that sent roundEnd, and that round is not frozen', () => {
+    const { t, got } = suicide();
+    const kinds = () => got.raw.map(kindOf);
+    for (let i = 0; i < 40 && !kinds().includes('roundEnd'); i++) t.step();
+    expect(kinds()).toContain('roundEnd');
+    // the tick that sent roundEnd is the first of the 60
+    for (let i = 0; i < 58; i++) t.step();
+    expect(kinds()).not.toContain('roundStart');
+    t.step();
+    expect(kinds()).toContain('roundStart');
+    t.step(); // roundStart goes out after the snapshot of its tick, so the next snapshot is the new round's
+    expect(got.snaps.at(-1)?.players.every((p) => p.alive)).toBe(true);
+    // the new round is not frozen
+    t.send({ seq: 2, dir: 'right', bomb: false });
+    for (let i = 0; i < 8; i++) t.step();
+    expect(got.snaps.at(-1)?.players[0]?.x).toBeGreaterThan(1);
+    t.disconnect();
+  });
+
+  it('an item leaves the floor only when a living player stands on its tile', () => {
+    const t = new MockTransport({ bots: 3, seed: 15 });
+    const got = collect(t);
+    t.connect();
+    for (let i = 0; i < 700; i++) t.step();
+    let prev: SnapshotMessage | undefined;
+    let pickups = 0;
+    for (const m of got.raw) {
+      if (kindOf(m) === 'roundStart') prev = undefined; // a new round clears the floor without a pickup
+      if ((m as Msg).t !== 'snapshot') continue;
+      const cur = m as SnapshotMessage;
+      for (const item of prev?.items ?? []) {
+        if (cur.items.some((i) => i.x === item.x && i.y === item.y)) continue;
+        pickups++;
+        const taker = cur.players.find(
+          (p) => p.alive && Math.round(p.x) === item.x && Math.round(p.y) === item.y,
+        );
+        expect(taker, `item at ${item.x},${item.y} vanished at tick ${cur.tick}`).toBeDefined();
+      }
+      prev = cur;
+    }
+    expect(pickups).toBeGreaterThan(0);
+    t.disconnect();
+  });
+
+  it('an item that nobody walks onto stays on the floor', () => {
+    const t = new MockTransport({ bots: 3, seed: 15 });
+    const got = collect(t);
+    t.connect();
+    for (let i = 0; i < 120; i++) t.step();
+    // by tick 120 a box has broken and dropped something that is still lying there
+    const seen = got.snaps.find((s) => s.items.length > 0);
+    expect(seen).toBeDefined();
     t.disconnect();
   });
 });

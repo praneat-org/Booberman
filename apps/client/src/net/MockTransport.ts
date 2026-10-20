@@ -57,8 +57,8 @@ const FLAME_TICKS = 10;
 const FLAME_RANGE = 2;
 const MAX_BOMBS = 2;
 const ITEM_DROP_CHANCE = 0.35;
-/** After we die the mock waits this long, then starts a new round (like a rematch). */
-const RESTART_AFTER_DEAD_TICKS = 60;
+/** After we die, or after the round ended, the mock waits this long, then starts a new round (like a rematch). */
+const RESTART_AFTER_TICKS = 60;
 const BOT_BOMB_CHANCE = 0.04;
 
 /** mulberry32 — same family as the server's PRNG, so mock bots are reproducible. */
@@ -143,7 +143,8 @@ type Listeners = {
 /**
  * Fake server for `?mock=1`: `welcome` + player events, then a `snapshot` every tick (20 Hz).
  * Our player follows the held direction (D27); bots wander. Bombs, flames, boxes breaking, item
- * drops and deaths are faked here so the client can be drawn without the real rules.
+ * drops, picking items up, deaths and the end of the round (`roundEnd` once one player or none is
+ * left) are faked here so the client can be drawn and heard without the real rules.
  * Everything it emits is run through `parseServerMessage` like a real socket would be.
  */
 export class MockTransport implements Transport {
@@ -153,6 +154,9 @@ export class MockTransport implements Transport {
   private flames = new Map<string, number>();
   private items: { x: number; y: number; kind: 'curse' }[] = [];
   private deadTicks = 0;
+  /** `roundEnd` was sent: like the server, the state stands still until the next round starts. */
+  private ended = false;
+  private endedTicks = 0;
   private readonly ruleRng: () => number;
   private readonly players: MockPlayer[];
   private readonly listeners: Listeners = {
@@ -264,17 +268,22 @@ export class MockTransport implements Transport {
   /** One server tick: move everybody, then broadcast a full snapshot. Public so tests can drive it. */
   step(): void {
     this.tick++;
-    for (const p of this.players) {
-      if (!p.alive) continue;
-      if (p.bot && !p.walkDir) {
-        p.heldDir = BOT_DIRS[Math.floor(p.bot() * BOT_DIRS.length)] ?? 'none';
-        if (this.ruleRng() < BOT_BOMB_CHANCE) p.wantsBomb = true;
+    // a finished round stands still, only the tick moves (D32)
+    if (!this.ended) {
+      for (const p of this.players) {
+        if (!p.alive) continue;
+        if (p.bot && !p.walkDir) {
+          p.heldDir = BOT_DIRS[Math.floor(p.bot() * BOT_DIRS.length)] ?? 'none';
+          if (this.ruleRng() < BOT_BOMB_CHANCE) p.wantsBomb = true;
+        }
+        this.move(p);
+        if (p.wantsBomb) this.placeBomb(p);
+        p.wantsBomb = false;
       }
-      this.move(p);
-      if (p.wantsBomb) this.placeBomb(p);
-      p.wantsBomb = false;
+      this.burn();
+      this.pickUpItems();
+      this.checkRoundEnd();
     }
-    this.burn();
     this.toClient({
       v: PROTOCOL_VERSION,
       t: 'snapshot',
@@ -321,6 +330,30 @@ export class MockTransport implements Transport {
     }
   }
 
+  /** Whoever stands on an item takes it (nearest tile, like the bombs and flames). The mock gives no curse. */
+  private pickUpItems(): void {
+    for (const p of this.players) {
+      if (!p.alive) continue;
+      const x = Math.round(p.x);
+      const y = Math.round(p.y);
+      this.items = this.items.filter((i) => i.x !== x || i.y !== y);
+    }
+  }
+
+  /** One player left = winner, nobody left = draw. Sent before the snapshot of that tick, like the server. */
+  private checkRoundEnd(): void {
+    const alive = this.players.filter((p) => p.alive);
+    if (alive.length > 1) return;
+    this.ended = true;
+    this.toClient({
+      v: PROTOCOL_VERSION,
+      t: 'event',
+      kind: 'roundEnd',
+      winner: alive[0]?.id ?? null,
+      reason: alive.length === 1 ? 'lastAlive' : 'allDead',
+    });
+  }
+
   private explode(bomb: MockBomb): void {
     this.flames.set(`${bomb.x},${bomb.y}`, FLAME_TICKS);
     for (const [dx, dy] of Object.values(DELTA)) {
@@ -350,12 +383,15 @@ export class MockTransport implements Transport {
     if (this.ruleRng() < ITEM_DROP_CHANCE) this.items.push({ x, y, kind: 'curse' });
   }
 
-  /** Everybody (or just we) dead for a while → new round, like a rematch. */
+  /** We are dead for a while, or the round has ended for a while → new round, like a rematch. */
   private maybeRestart(): void {
     const me = this.players[0];
     this.deadTicks = me && !me.alive ? this.deadTicks + 1 : 0;
-    if (this.deadTicks < RESTART_AFTER_DEAD_TICKS) return;
+    this.endedTicks = this.ended ? this.endedTicks + 1 : 0;
+    if (this.deadTicks < RESTART_AFTER_TICKS && this.endedTicks < RESTART_AFTER_TICKS) return;
     this.deadTicks = 0;
+    this.endedTicks = 0;
+    this.ended = false;
     this.round++;
     this.grid = exampleGrid();
     this.bombs = [];

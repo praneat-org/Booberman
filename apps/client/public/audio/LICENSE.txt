@@ -1,0 +1,38 @@
+Booberman sound effects: Kenney, CC0 1.0 (public domain dedication)
+=====================================================================
+
+Every .ogg file in this folder is a byte-for-byte copy of a sound effect from an official Kenney
+starter-kit repository (https://github.com/KenneyNL). The .mp3 files are only a re-encode of the
+matching .ogg (mono, libmp3lame -q:a 4) so browsers without Ogg Vorbis support (older Safari / iOS)
+can play the same sound. Nothing else was changed: no editing, mixing or pitch shifting on disk.
+
+| file              | source repository (commit)                         | path in that repository   | sha256 of the .ogg                                               |
+| ----------------- | -------------------------------------------------- | ------------------------- | ---------------------------------------------------------------- |
+| bomb-place.ogg    | KenneyNL/Starter-Kit-City-Builder (4535092b740b)   | sounds/placement-d.ogg    | 1d51fb31658bed131ebc3df59e94f8ae6dfc4336a493f60ff052c9bf80de1302 |
+| bomb-explode.ogg  | KenneyNL/Starter-Kit-FPS (185fd2326d74)            | sounds/enemy_destroy.ogg  | 3205e84c18ab40eabdb70fa8a779489b666f1e452e3815b3c2b3b71fb418d006 |
+| player-die.ogg    | KenneyNL/Starter-Kit-FPS (185fd2326d74)            | sounds/enemy_hurt.ogg     | 59e4ed89a582a03e96086ce031ae30b46630d371fc02d2c566059bd4e0d1dab8 |
+| item-pickup.ogg   | KenneyNL/Starter-Kit-3D-Platformer (3fa8a04b1c01)  | sounds/coin.ogg           | df55e931e6b78e5aecc015922e873a0e8bfa4e97cfb19abc64149d54afe89216 |
+| round-win.ogg     | KenneyNL/Starter-Kit-Match-3 (4ddb3d2a50cb)        | sounds/tile-match.ogg     | d13852fa1f425fdaaf03cb1b17aecc572a8081f8be2a1ee5f105756c9fdae5d5 |
+
+`round-win` is played by the client as a short rising arpeggio (the same sample at 4 playback rates,
+see src/audio/sfx.ts); there is no separate fanfare file.
+
+License text shipped by those repositories (README.md "License" section, identical in all four):
+
+---------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2026 Kenney
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Assets included in this package (2D sprites, 3D models and sound effects) are CC0 licensed
+(https://creativecommons.org/publicdomain/zero/1.0/)
+---------------------------------------------------------------------
+
+The MIT part covers the starter kits' code; the sound effects are the "assets ... CC0 licensed" part.
+Credit is not required for CC0, but: sounds by Kenney (https://kenney.nl).

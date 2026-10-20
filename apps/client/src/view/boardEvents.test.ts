@@ -162,3 +162,66 @@ describe('roster (HUD nicknames)', () => {
     expect(round.latest).toBeUndefined();
   });
 });
+
+describe('sounds follow the round view (FE-18)', () => {
+  /** Like `feed`, but returns the sounds that frame called for. */
+  const hear = (round: RoundView, snap: Snapshot) => {
+    round.applySnapshot(snap, snap.tick * 50);
+    return round.frame(snap.tick * 50);
+  };
+  const quiet = (tick: number, players: PlayerState[] = [p(1, 1)]): Snapshot => ({
+    ...exampleServerMessages.snapshot,
+    tick,
+    players,
+    bombs: [],
+    flames: [],
+    items: [],
+  });
+
+  it('frame() returns the sounds of the snapshot just drawn', () => {
+    const round = newRound();
+    expect(hear(round, quiet(1))).toEqual([]);
+    expect(hear(round, { ...quiet(2), bombs: [{ x: 3, y: 3, fuse: 40 }] })).toEqual(['bombPlace']);
+    expect(hear(round, { ...quiet(3), flames: [[3, 3]] })).toEqual(['explode']);
+  });
+
+  it('roundEnd with a winner plays win when the snapshot after the newest received is drawn', () => {
+    const round = newRound();
+    hear(round, quiet(10));
+    expect(applyBoardEvent(exampleServerMessages.roundEndWin, round)).toBe(false);
+    expect(round.frame(10 * 50)).toEqual([]);
+    expect(hear(round, quiet(11))).toEqual(['win']);
+    expect(hear(round, quiet(12))).toEqual([]);
+  });
+
+  it('a draw makes no win sound', () => {
+    for (const draw of [
+      exampleServerMessages.roundEndDraw,
+      exampleServerMessages.roundEndTimeout,
+    ]) {
+      const round = newRound();
+      hear(round, quiet(10));
+      applyBoardEvent(draw, round);
+      expect(hear(round, quiet(11))).toEqual([]);
+    }
+  });
+
+  it('roundStart and welcome reset the tracker: the old round vanishing is not heard, a waiting win is dropped', () => {
+    for (const reset of [
+      (r: RoundView) => applyBoardEvent(exampleServerMessages.roundStart, r),
+      (r: RoundView) => applyWelcome({ grid: exampleGrid(), playerId: 'p1' }, r, 'Hi'),
+    ]) {
+      const round = newRound();
+      hear(round, {
+        ...quiet(10),
+        bombs: [{ x: 3, y: 3, fuse: 5 }],
+        items: [{ x: 5, y: 1, kind: 'curse' }],
+      });
+      applyBoardEvent(exampleServerMessages.roundEndWin, round);
+      reset(round);
+      // a snapshot that, next to the old round's, would read as an explosion + a pickup + a win
+      expect(hear(round, { ...quiet(11), flames: [[3, 3]] })).toEqual([]);
+      expect(hear(round, quiet(12))).toEqual([]);
+    }
+  });
+});
