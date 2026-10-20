@@ -144,6 +144,7 @@ export class GameScene extends Phaser.Scene {
         : undefined,
     });
     this.audio = audio;
+    cleanups.push(() => audio.dispose());
     const muteButton = new MuteButton(audio);
     cleanups.push(() => muteButton.destroy());
     cleanups.push(...this.watchJoin(transport, join));

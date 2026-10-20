@@ -51,7 +51,7 @@ export interface SfxVoice {
 export const SFX_VOICES: Record<SfxName, readonly SfxVoice[]> = {
   bombPlace: [{ key: AudioKey.BombPlace, volume: 0.8 }],
   explode: [{ key: AudioKey.BombExplode, volume: 0.8 }],
-  die: [{ key: AudioKey.PlayerDie, volume: 0.9 }],
+  die: [{ key: AudioKey.PlayerDie, volume: 0.5 }],
   // the coin sample is the quietest of the five, so it plays at full volume
   pickup: [{ key: AudioKey.ItemPickup, volume: 1 }],
   // one chime four times, each a bit higher and later: a rising "round won" arpeggio

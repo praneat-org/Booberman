@@ -4,6 +4,8 @@ import { SFX_VOICES, type SfxName } from './sfx';
 export interface SoundPort {
   /** Silences / restores everything the port plays, including sounds that are already in flight. */
   setMute(muted: boolean): void;
+  /** Releases any nodes installed into the shared sound manager. */
+  dispose?(): void;
   /** True until the browser lets us make sound (first tap / key press). */
   readonly locked: boolean;
   /** Only the Web Audio manager has one; `suspended` also happens when the tab is in the background. */
@@ -60,6 +62,7 @@ export class GameAudio {
   private readonly saveMuted: (muted: boolean) => void;
   private readonly now: () => number;
   private readonly onLog: ((entry: SfxLogEntry) => void) | undefined;
+  private disposed = false;
 
   constructor(deps: GameAudioDeps) {
     this.sound = deps.sound;
@@ -95,6 +98,13 @@ export class GameAudio {
     return () => {
       this.listeners.delete(cb);
     };
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.listeners.clear();
+    this.sound.dispose?.();
   }
 
   /** Whether the browser lets us make sound right now. */
