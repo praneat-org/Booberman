@@ -38,6 +38,57 @@ function webAudioManager() {
 }
 
 describe('toSoundPort', () => {
+  it('installs a limiter after master volume and restores the original route on dispose', () => {
+    const connections: string[] = [];
+    const compressor = {
+      threshold: { value: 0 },
+      knee: { value: 0 },
+      ratio: { value: 0 },
+      attack: { value: 0 },
+      release: { value: 0 },
+      connect: () => connections.push('compressor->destination'),
+      disconnect: () => connections.push('compressor disconnected'),
+    } as unknown as DynamicsCompressorNode;
+    const context = {
+      state: 'running',
+      destination: {} as AudioNode,
+      createDynamicsCompressor: () => compressor,
+    } as unknown as AudioContext;
+    const masterVolumeNode = {
+      disconnect: () => connections.push('volume disconnected'),
+      connect: (target: AudioNode) =>
+        connections.push(target === compressor ? 'volume->compressor' : 'volume->destination'),
+    } as unknown as GainNode;
+    const sound: PhaserSoundLike = {
+      mute: false,
+      locked: false,
+      context,
+      masterVolumeNode,
+      play: () => true,
+    };
+
+    const port = toSoundPort(sound);
+
+    expect(connections).toEqual([
+      'volume disconnected',
+      'volume->compressor',
+      'compressor->destination',
+    ]);
+    expect(compressor.threshold.value).toBe(-1);
+    expect(compressor.knee.value).toBe(0);
+    expect(compressor.ratio.value).toBe(20);
+    expect(compressor.attack.value).toBe(0.001);
+    expect(compressor.release.value).toBe(0.12);
+
+    port.dispose?.();
+
+    expect(connections.slice(3)).toEqual([
+      'volume disconnected',
+      'compressor disconnected',
+      'volume->destination',
+    ]);
+  });
+
   it('Web Audio: mute clears what is scheduled on the master gain, then writes the value (never Phaser setter)', () => {
     const { manager, calls } = webAudioManager();
     const port = toSoundPort(manager as PhaserSoundLike);

@@ -10,10 +10,37 @@ interface GainParam {
 export interface PhaserSoundLike {
   mute: boolean;
   readonly locked: boolean;
-  readonly context?: { readonly state: string };
+  readonly context?: { readonly state: string } | AudioContext;
   /** Web Audio only. */
   readonly masterMuteNode?: { readonly gain: GainParam } | null;
+  /** Web Audio only. */
+  readonly masterVolumeNode?: GainNode | null;
   play(key: string, config?: { volume?: number; rate?: number; delay?: number }): boolean;
+}
+
+function installLimiter(sound: PhaserSoundLike): (() => void) | undefined {
+  const context = sound.context;
+  const volumeNode = sound.masterVolumeNode;
+  if (!context || !('createDynamicsCompressor' in context) || !volumeNode || !context.destination) {
+    return undefined;
+  }
+
+  const compressor = context.createDynamicsCompressor();
+  compressor.threshold.value = -1;
+  compressor.knee.value = 0;
+  compressor.ratio.value = 20;
+  compressor.attack.value = 0.001;
+  compressor.release.value = 0.12;
+
+  volumeNode.disconnect();
+  volumeNode.connect(compressor);
+  compressor.connect(context.destination);
+
+  return () => {
+    volumeNode.disconnect();
+    compressor.disconnect();
+    volumeNode.connect(context.destination);
+  };
 }
 
 /**
@@ -25,6 +52,7 @@ export interface PhaserSoundLike {
  * no gain node, its own setter is fine.
  */
 export function toSoundPort(sound: PhaserSoundLike): SoundPort {
+  const removeLimiter = installLimiter(sound);
   return {
     get locked() {
       return sound.locked;
@@ -42,5 +70,6 @@ export function toSoundPort(sound: PhaserSoundLike): SoundPort {
       gain.value = muted ? 0 : 1;
     },
     play: (key, config) => sound.play(key, config),
+    dispose: () => removeLimiter?.(),
   };
 }

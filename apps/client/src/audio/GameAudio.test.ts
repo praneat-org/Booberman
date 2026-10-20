@@ -152,6 +152,22 @@ describe('GameAudio mute switch', () => {
     expect(saved.sound.mute).toBe(true);
   });
 
+  it('disposes its sound port once and drops mute listeners', () => {
+    const s = fakeSound();
+    const dispose = vi.fn();
+    s.sound.dispose = dispose;
+    const { audio } = setup({ sound: s });
+    const listener = vi.fn();
+    audio.onMuteChange(listener);
+
+    audio.dispose();
+    audio.dispose();
+    audio.setMuted(true);
+
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
   it('a new GameAudio resets a sound manager that a previous scene left muted', () => {
     const s = fakeSound();
     s.sound.mute = true;
