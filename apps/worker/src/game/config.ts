@@ -33,7 +33,7 @@ export interface GameConfig {
   readonly curseItemShare: number;
   /** Kind of every dropped item that is not a curse (kick has no effect yet: CAR-3801). */
   readonly otherItemKind: ItemKind;
-  /** Ticks of reverse-controls curse after picking one up (160 → 8 s). */
+  /** Ticks of reverse-controls curse after picking one up (120 → 6 s per D39). */
   readonly curseTicks: number;
   /** A transferred curse lasts at least this many ticks (80 → 4 s), or what was left if more. */
   readonly curseMinTicksAfterTransfer: number;
@@ -63,7 +63,7 @@ export const GAME_CONFIG: GameConfig = {
   itemDropChance: 0.35,
   curseItemShare: 0.6,
   otherItemKind: 'kick',
-  curseTicks: 160,
+  curseTicks: 120,
   curseMinTicksAfterTransfer: 80,
   curseTransferCooldownTicks: 20,
   curseBlocksBombing: false,
