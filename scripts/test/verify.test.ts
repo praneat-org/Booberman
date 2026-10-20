@@ -35,7 +35,7 @@ describe('verifyPublicAssets', () => {
     ]);
   });
 
-  it('fails on a wrong Cache-Control, a missing CORS header, a foreign origin or a 404', async () => {
+  it('fails on a wrong Cache-Control, missing or wildcard CORS, a foreign origin or a 404', async () => {
     await expect(run(fakeFetch({ ...good, 'cache-control': 'max-age=60' }).impl)).rejects.toThrow(
       /Cache-Control/,
     );
@@ -44,6 +44,9 @@ describe('verifyPublicAssets', () => {
     );
     await expect(
       run(fakeFetch({ ...good, 'access-control-allow-origin': 'https://evil.example' }).impl),
+    ).rejects.toThrow(/Allow-Origin/);
+    await expect(
+      run(fakeFetch({ ...good, 'access-control-allow-origin': '*' }).impl),
     ).rejects.toThrow(/Allow-Origin/);
     await expect(run(fakeFetch(good, 404).impl)).rejects.toThrow(/HTTP 404/);
   });

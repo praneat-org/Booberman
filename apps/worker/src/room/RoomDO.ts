@@ -162,6 +162,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   override async webSocketError(ws: WebSocket, _error?: unknown): Promise<void> {
     // Same here: the runtime has already signalled the socket is broken; closing it again is not needed.
     const left = this.leave(ws);
+    if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'error');
     if (left) await this.rematchAfterLeave();
   }
 

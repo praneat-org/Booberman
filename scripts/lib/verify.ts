@@ -61,7 +61,7 @@ async function checkOne(url: string, origin: string, fetchImpl: typeof fetch): P
   const cc = res.headers.get('cache-control');
   if (cc !== IMMUTABLE_CACHE_CONTROL) problems.push(`${url}: Cache-Control is "${cc ?? ''}"`);
   const acao = res.headers.get('access-control-allow-origin');
-  if (acao !== origin && acao !== '*') {
+  if (acao !== origin) {
     problems.push(`${url}: Access-Control-Allow-Origin is "${acao ?? ''}" (want ${origin})`);
   }
   return problems;
