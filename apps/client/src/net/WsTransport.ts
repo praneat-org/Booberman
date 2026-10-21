@@ -124,6 +124,10 @@ export class WsTransport implements Transport {
     this.write({ v: PROTOCOL_VERSION, t: 'ping', ts });
   }
 
+  rematch(): void {
+    this.write({ v: PROTOCOL_VERSION, t: 'rematch' });
+  }
+
   onWelcome(cb: (msg: WelcomeMessage) => void): Unsubscribe {
     return this.subscribe(this.listeners.welcome, cb);
   }

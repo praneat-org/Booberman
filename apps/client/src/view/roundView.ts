@@ -3,8 +3,10 @@ import type { SfxName } from '../audio/sfx';
 import { SfxTracker } from '../audio/sfxTracker';
 import type { SnapshotMessage } from '../net/Transport';
 import { BoxField } from './boardView';
+import type { EndView, RematchStatus } from './endView';
 import { toBombViews, toFlameViews, toItemViews } from './entityViews';
 import { Roster } from './hudView';
+import { KillFeed } from './killFeed';
 import { type PlayerAnim, PlayerAnimTracker } from './playerAnim';
 import { type PlayerView, toPlayerViews } from './playerViews';
 import { DEFAULT_INTERPOLATION_DELAY_MS, SnapshotBuffer } from './snapshotBuffer';
@@ -31,6 +33,17 @@ export class RoundView {
   readonly sfx = new SfxTracker();
   /** Nicknames for the HUD. Per connection, not per round: only `resetSession` clears it. */
   readonly roster = new Roster();
+  /** Our own id, from `welcome`; per connection like the roster. */
+  selfId: PlayerId | undefined;
+  /** Who killed whom this round (FE-21); the corner list reads it. */
+  readonly killFeed = new KillFeed();
+  /**
+   * The end screen (FE-21): set by `roundEnd`, gone when the next round starts. It is the server's
+   * table, never ours: a snapshot after `roundEnd` (a frozen board, a newcomer's spawn) does not touch it.
+   */
+  end: EndView | undefined;
+  /** Who pressed "play again" and the server's deadline; only shown while `end` is set. */
+  rematch: RematchStatus | undefined;
   /** What is being drawn: the buffered snapshot at the render time, players interpolated. */
   latest: SnapshotMessage | undefined;
   playerAnims: Map<string, PlayerAnim> = new Map();
@@ -44,6 +57,9 @@ export class RoundView {
     if (grid !== undefined) this.boxes.reset(grid);
     this.animTracker.reset();
     this.sfx.reset();
+    this.killFeed.clear();
+    this.end = undefined;
+    this.rematch = undefined;
     this.buffer.reset();
     this.latest = undefined;
     this.renderTick = undefined;
@@ -53,6 +69,7 @@ export class RoundView {
   /** `welcome`: a new connection, so the roster starts empty too (joins are replayed after it). */
   resetSession(grid?: string): void {
     this.roster.clear();
+    this.selfId = undefined;
     this.reset(grid);
   }
 

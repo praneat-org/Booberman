@@ -1,4 +1,4 @@
-import { exampleServerMessages, PROTOCOL_VERSION } from '@booberman/protocol';
+import { ClientMessage, exampleServerMessages, PROTOCOL_VERSION } from '@booberman/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { roomSocketUrl, type SocketLike, WsTransport } from './WsTransport';
 
@@ -128,6 +128,17 @@ describe('WsTransport', () => {
       { v: PROTOCOL_VERSION, t: 'input', seq: 2, dir: 'up', bomb: true },
       { v: PROTOCOL_VERSION, t: 'ping', ts: 123 },
     ]);
+  });
+
+  it('rematch sends exactly `{ v, t: rematch }` (D9), a valid ClientMessage, and is dropped until the socket is open', () => {
+    const { t, sock } = setup();
+    t.connect();
+    t.rematch();
+    expect(sock().sent).toEqual([]);
+    sock().open();
+    t.rematch();
+    expect(sock().sent.slice(1)).toEqual([{ v: PROTOCOL_VERSION, t: 'rematch' }]);
+    expect(ClientMessage.safeParse(sock().sent[1]).success).toBe(true);
   });
 
   it('ROOM_FULL: error message then close 4001 is one onError, plus onClose', () => {
