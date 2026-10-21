@@ -2,7 +2,7 @@ import { type LeaderboardBy, PROTOCOL_VERSION } from '@booberman/protocol';
 import { appTitle } from '../title';
 import { el, LOBBY_STYLE } from './dom';
 import { fetchLeaderboard, type LeaderboardResult } from './leaderboardApi';
-import { LEADERBOARD_TABS, leaderboardView } from './leaderboardView';
+import { LEADERBOARD_TABS, leaderboardView, nextTabIndex } from './leaderboardView';
 
 /** `/leaderboard` (FE-25): three tabs over `GET /api/leaderboard?by=`. DOM, same look as the lobby. */
 export class LeaderboardOverlay {
@@ -26,6 +26,18 @@ export class LeaderboardOverlay {
       tab.setAttribute('role', 'tab');
       tab.setAttribute('aria-controls', 'bb-panel');
       tab.addEventListener('click', () => this.select(by));
+      tab.addEventListener('keydown', (e) => {
+        const i = nextTabIndex(
+          e.key,
+          LEADERBOARD_TABS.findIndex((t) => t.by === by),
+          LEADERBOARD_TABS.length,
+        );
+        const target = i === null ? undefined : LEADERBOARD_TABS[i];
+        if (!target) return;
+        e.preventDefault();
+        this.tabs.get(target.by)?.focus();
+        this.select(target.by);
+      });
       this.tabs.set(by, tab);
       list.append(tab);
     }
