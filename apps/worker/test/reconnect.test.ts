@@ -173,14 +173,16 @@ describe('AC: dropped for 5 s, back with the token -> the same slot and state', 
     await drop('seq1', 'p2');
     const b2 = await comeBack('seq1', b.welcome.token);
     await b2.next(isWelcome);
-    // a new InputSender starts at 1, far below the 50 the server saw before the drop
-    b2.send({ v, t: 'input', seq: 1, dir: 'none', bomb: false });
-    await sleep(150);
+    expect((await gameOf('seq1'))?.players.find((p) => p.id === 'p2')?.heldDir).toBe('none');
+    // a new InputSender starts at 1, far below the 50 the server saw before the drop. 'left' is an input
+    // with an effect that shows: if the queue dropped it as stale, heldDir would stay 'none'
+    b2.send({ v, t: 'input', seq: 1, dir: 'left', bomb: false });
+    const heldDir = async () => (await gameOf('seq1'))?.players.find((p) => p.id === 'p2')?.heldDir;
+    for (let i = 0; i < 50 && (await heldDir()) !== 'left'; i++) await sleep(20);
+    expect(await heldDir()).toBe('left');
     expect(
       await runInDurableObject(stubFor('seq1'), (r: RoomDO) => r.tickStats().inputs),
-    ).toMatchObject({
-      stale: 0,
-    });
+    ).toMatchObject({ stale: 0 });
     const p2 = (await gameOf('seq1'))?.players.find((p) => p.id === 'p2');
     expect(p2?.ackSeq).toBeGreaterThanOrEqual(50); // ackSeq never goes back (Math.max in simulate)
     a.c.close();
@@ -198,6 +200,31 @@ describe('AC: dropped for 5 s, back with the token -> the same slot and state', 
     expect(await runInDurableObject(stubFor('back3'), (r: RoomDO) => r.players().length)).toBe(2);
     a.c.close();
     b2.close();
+  });
+});
+
+describe('a takeover is not a drop', () => {
+  it('a rematch press survives it: the player is still ready afterwards', async () => {
+    const [a, b, c] = await start('take1', 'A', 'B', 'C');
+    await editState('take1', () => ({ tick: 2999 }));
+    await a.c.next(roundEnd);
+    b.c.send({ v, t: 'rematch' });
+    await b.c.next((m) => m.t === 'event' && m.kind === 'rematchStatus');
+
+    const b2 = await comeBack('take1', b.welcome.token); // the server never saw B's socket go
+    await b2.next(isWelcome);
+    expect(
+      await runInDurableObject(
+        stubFor('take1'),
+        (r: RoomDO) => r.players().find((p) => p.playerId === 'p2')?.ready,
+      ),
+    ).toBe(true);
+
+    // B must not have to press again: A and C pressing is all the round needs
+    a.c.send({ v, t: 'rematch' });
+    c.c.send({ v, t: 'rematch' });
+    await a.c.next(roundStart);
+    for (const x of [a.c, b2, c.c]) x.close();
   });
 });
 
@@ -303,13 +330,25 @@ describe('AC: past 15 s the player has left; a wrong token is refused', () => {
     a.c.close();
   });
 
-  it('exactly at the deadline the slot is gone, one millisecond before it is not', async () => {
+  it('one millisecond before the deadline the slot is still there', async () => {
     const [a, b] = await start('edge1', 'A', 'B');
     await drop('edge1', 'p2');
     later(RECONNECT_HOLD_MS - 1);
     const ok = await comeBack('edge1', b.welcome.token);
     expect((await ok.next(isWelcome)).playerId).toBe('p2');
     for (const c of [a.c, ok]) c.close();
+  });
+
+  it('exactly at the deadline the slot is gone', async () => {
+    const [a, b] = await start('edge2', 'A', 'B');
+    await drop('edge2', 'p2');
+    later(RECONNECT_HOLD_MS); // the clock is frozen, so this is expiresAt to the millisecond
+    const late = await comeBack('edge2', b.welcome.token);
+    await late.next(isError);
+    expect(late.received.find(isError)).toMatchObject({ code: 'INVALID_TOKEN' });
+    expect(late.received.some(isWelcome)).toBe(false);
+    expect(await a.c.next(isEvent('playerLeft'))).toMatchObject({ playerId: 'p2' });
+    a.c.close();
   });
 
   it('a wrong token is refused with INVALID_TOKEN and the held slot is untouched', async () => {

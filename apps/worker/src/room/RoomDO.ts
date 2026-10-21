@@ -314,9 +314,12 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     // first retire the holds that ran out, even if their alarm is late: a token is never honoured past 15 s
     await this.expireHeld(Date.now());
     let seat: Seat | undefined = this.held.claim(token, Date.now());
+    // a takeover is not a drop: the player never left, so what hangs on the socket (the rematch press) stays
+    let ready = false;
     if (!seat) {
       const old = this.players().find((p) => sameToken(p.token, token));
       if (old) {
+        ready = old.ready;
         old.ws.serializeAttachment({ joined: false, room } satisfies Attachment);
         this.queue.remove(old.playerId);
         old.ws.close(CLOSE_REPLACED, 'REPLACED');
@@ -337,6 +340,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       nickname,
       session,
       token: reconnectToken,
+      ...(ready ? { ready } : {}),
     } satisfies Attachment);
     this.saveHeld();
     await this.rearmAlarm();
