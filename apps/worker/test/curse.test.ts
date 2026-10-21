@@ -4,7 +4,7 @@ import type { ServerMessage } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, type GameState } from '../src/game';
 import type { RoomDO } from '../src/room/RoomDO';
-import { join, v } from './helpers';
+import { begin, join, v } from './helpers';
 
 type Snapshot = Extract<ServerMessage, { t: 'snapshot' }>;
 const isSnapshot = (m: ServerMessage): m is Snapshot => m.t === 'snapshot';
@@ -12,6 +12,7 @@ const isSnapshot = (m: ServerMessage): m is Snapshot => m.t === 'snapshot';
 describe('reverse curse over a real WebSocket (BE-40)', () => {
   it('a curse item makes the server reverse the controls and the snapshot shows the ticks left', async () => {
     const a = await join('curse1', 'A');
+    await begin('curse1', a);
     const b = await join('curse1', 'B');
     await b.next((m) => isSnapshot(m) && m.players.length === 2);
 

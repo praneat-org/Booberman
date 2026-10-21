@@ -18,7 +18,7 @@ import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
 import { toCurseFrames } from '../view/curseFrames';
 import { debugEnabled } from '../view/debugStats';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
-import { toRematchView } from '../view/endView';
+import { toRematchView, toWaitingRows } from '../view/endView';
 import { BOARD_HEIGHT_PX, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
 import { type Drawable, RoundView } from '../view/roundView';
@@ -222,6 +222,15 @@ export class GameScene extends Phaser.Scene {
     );
     const end = this.round.end;
     const now = Date.now();
+    if (this.round.waiting) {
+      const { rematch, roster } = this.round;
+      this.endScreen?.syncWaiting(
+        toWaitingRows(rematch, roster, this.selfId),
+        toRematchView(rematch, roster, this.selfId, now),
+        now,
+      );
+      return;
+    }
     this.endScreen?.sync(
       end,
       end && toRematchView(this.round.rematch, this.round.roster, this.selfId, now),

@@ -17,8 +17,8 @@ export const AudioKey = {
 
 /**
  * Base names under `audio/`. Each is offered as .ogg and .mp3 and Phaser plays the first the browser
- * supports (older Safari / iOS have no Ogg Vorbis). Plain names for now: the hashed names from the
- * asset manifest (BE-37) replace this list once that lands.
+ * supports (older Safari / iOS have no Ogg Vorbis). These are logical names: BootScene resolves them
+ * through the asset manifest (FE-16) to the hashed file in the bucket.
  */
 const FILE_BASENAME: Record<(typeof AudioKey)[keyof typeof AudioKey], string> = {
   [AudioKey.BombPlace]: 'bomb-place',
@@ -30,7 +30,7 @@ const FILE_BASENAME: Record<(typeof AudioKey)[keyof typeof AudioKey], string> = 
 
 export interface AudioFile {
   key: string;
-  /** Relative to the loader's base URL, preferred format first. */
+  /** Logical names (keys of manifest.json), preferred format first. */
   urls: string[];
 }
 
