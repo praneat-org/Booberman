@@ -1,6 +1,7 @@
 import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
 
@@ -14,7 +15,7 @@ cpSync(new URL('../client/public/_headers', import.meta.url), join(assetsDir, '_
 
 // BE-42: the REAL migrations/ files (the ones `wrangler d1 migrations apply` runs in deploy-*.yml) are read
 // here in Node and applied to the local test D1 by test/setup.ts, so a broken migration fails `pnpm test`.
-const migrations = await readD1Migrations(new URL('./migrations', import.meta.url).pathname);
+const migrations = await readD1Migrations(fileURLToPath(new URL('./migrations', import.meta.url)));
 
 // Tests run inside workerd with the real RoomDO binding from wrangler.jsonc.
 export default defineConfig({
