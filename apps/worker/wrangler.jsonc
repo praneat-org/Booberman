@@ -36,6 +36,11 @@
       "name": "ROOM_CREATE_LIMITER",
       "namespace_id": "1001",
       "simple": { "limit": 5, "period": 60 }
+    },
+    {
+      "name": "LEADERBOARD_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 30, "period": 60 }
     }
   ],
   // wrangler does NOT inherit these into an env: durable_objects, migrations, kv_namespaces, d1_databases,
@@ -62,6 +67,11 @@
           "name": "ROOM_CREATE_LIMITER",
           "namespace_id": "1001",
           "simple": { "limit": 5, "period": 60 }
+        },
+        {
+          "name": "LEADERBOARD_LIMITER",
+          "namespace_id": "1003",
+          "simple": { "limit": 30, "period": 60 }
         }
       ]
     },
@@ -84,6 +94,11 @@
           "name": "ROOM_CREATE_LIMITER",
           "namespace_id": "1002",
           "simple": { "limit": 5, "period": 60 }
+        },
+        {
+          "name": "LEADERBOARD_LIMITER",
+          "namespace_id": "1004",
+          "simple": { "limit": 30, "period": 60 }
         }
       ]
     }

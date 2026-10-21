@@ -101,6 +101,7 @@ describe('wrangler.jsonc env dev / production', () => {
       expect(e.durable_objects).toEqual(config.durable_objects);
       expect(e.migrations).toEqual(config.migrations);
       expect(e.ratelimits[0].name).toBe('ROOM_CREATE_LIMITER');
+      expect(e.ratelimits[1].name).toBe('LEADERBOARD_LIMITER');
       expect(e.r2_buckets).toBeUndefined();
     }
     expect(config.r2_buckets).toBeUndefined();
