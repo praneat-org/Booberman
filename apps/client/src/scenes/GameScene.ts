@@ -14,6 +14,7 @@ import { attachDebugOverlay } from '../ui/DebugOverlay';
 import { EndOverlay } from '../ui/EndOverlay';
 import { KillFeedOverlay } from '../ui/KillFeedOverlay';
 import { RoomBar } from '../ui/RoomBar';
+import { browserTouchEnv, TouchControls } from '../ui/TouchControls';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
 import { toCurseFrames } from '../view/curseFrames';
 import { debugEnabled } from '../view/debugStats';
@@ -23,6 +24,7 @@ import { KICK_BADGE_SCALE, KICK_BADGE_TINT, toKickBadges } from '../view/kickBad
 import { BOARD_HEIGHT_PX, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
 import { type Drawable, RoundView } from '../view/roundView';
+import { touchEnabled } from '../view/touchControls';
 import { AssetKey, SceneKey } from './keys';
 import type { LobbySceneData } from './LobbyScene';
 
@@ -167,6 +169,7 @@ export class GameScene extends Phaser.Scene {
     cleanups.push(() => endScreen.destroy());
     cleanups.push(...this.watchJoin(transport, join));
     cleanups.push(...this.bindKeyboard(audio));
+    cleanups.push(...this.bindTouch());
     if (debugEnabled(window.location.search)) {
       cleanups.push(
         attachDebugOverlay(transport, () => ({
@@ -433,6 +436,31 @@ export class GameScene extends Phaser.Scene {
       sprite.destroy();
       sprites.delete(key);
     }
+  }
+
+  /**
+   * FE-28: on-screen D-pad + bomb button, only where the primary pointer is a finger (or `?touch=1`).
+   * They feed the same `DirectionTracker` and `bombPressed` as the keyboard, so `InputSender` (D27)
+   * is the only thing that turns either into messages. The blur / hidden handling that releases the
+   * keys also releases the touch buttons (see `TouchControls`).
+   */
+  private bindTouch(): Unsubscribe[] {
+    const host = document.getElementById('app');
+    if (!host || !touchEnabled(window.location.search, browserTouchEnv())) return [];
+    const controls = new TouchControls(
+      {
+        press: (button) => {
+          if (button === 'bomb') this.bombPressed = true;
+          else this.tracker.press(button);
+        },
+        release: (button) => {
+          if (button !== 'bomb') this.tracker.release(button);
+        },
+      },
+      host,
+      () => this.refitCanvas(),
+    );
+    return [() => controls.destroy()];
   }
 
   /** Arrow keys + Space, `M` mutes; blur / hidden tab → release everything so we send `none` (D27). */
