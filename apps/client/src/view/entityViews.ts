@@ -56,7 +56,7 @@ export interface ItemView {
   px: number;
   py: number;
   kind: ItemKind;
-  /** Spritesheet frame: 0 = curse (purple), 1 = kick (green). */
+  /** Spritesheet frame: 0 = curse (? block), 1 = kick (skate). */
   frame: number;
 }
 

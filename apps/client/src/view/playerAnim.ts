@@ -1,23 +1,13 @@
 import type { PlayerState } from '@booberman/protocol';
-import { KenneyFrame } from '../assets/kenneyTinyDungeon';
+import { SheetFrame } from '../assets/sheetFrames';
 
 export type Facing = 'down' | 'up' | 'left' | 'right';
 
 export const FACINGS: readonly Facing[] = ['down', 'up', 'left', 'right'];
 /** Frame in the player sheet when standing still (down, up, left, right). */
-export const IDLE_FRAME: Record<Facing, number> = {
-  down: KenneyFrame.player,
-  up: KenneyFrame.player,
-  left: KenneyFrame.player,
-  right: KenneyFrame.player,
-};
+export const IDLE_FRAME: Record<Facing, number> = SheetFrame.idle;
 /** First / last frame of each walk cycle in the player sheet. */
-export const WALK_FRAMES: Record<Facing, readonly [number, number]> = {
-  down: [KenneyFrame.player, KenneyFrame.player],
-  up: [KenneyFrame.player, KenneyFrame.player],
-  left: [KenneyFrame.player, KenneyFrame.player],
-  right: [KenneyFrame.player, KenneyFrame.player],
-};
+export const WALK_FRAMES: Record<Facing, readonly [number, number]> = SheetFrame.walk;
 export const walkAnimKey = (facing: Facing): string => `walk-${facing}`;
 
 /** Cosmetic only: how long the death animation plays, in server ticks (0.4 s). */

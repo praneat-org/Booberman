@@ -7,7 +7,7 @@ import { AssetKey, SceneKey } from './keys';
 
 const BAR_WIDTH = 120;
 const BAR_HEIGHT = 8;
-const REQUIRED_ASSETS: readonly string[] = [AssetKey.Arena, AssetKey.Kenney];
+const REQUIRED_ASSETS: readonly string[] = [AssetKey.Arena, AssetKey.Sheet];
 
 export class BootScene extends Phaser.Scene {
   private failedKeys = new Set<string>();
@@ -41,10 +41,9 @@ export class BootScene extends Phaser.Scene {
     });
 
     this.load.tilemapTiledJSON(AssetKey.Arena, 'maps/arena.json');
-    this.load.spritesheet(AssetKey.Kenney, 'tiles/tileset.png', {
+    this.load.spritesheet(AssetKey.Sheet, 'tiles/tileset.png', {
       frameWidth: TILE_SIZE,
       frameHeight: TILE_SIZE,
-      spacing: 1,
     });
     // sound is optional: a file that fails to load only means that sound stays silent (see create)
     for (const file of AUDIO_FILES) this.load.audio(file.key, file.urls);
@@ -72,7 +71,7 @@ export class BootScene extends Phaser.Scene {
       const [start, end] = WALK_FRAMES[facing];
       this.anims.create({
         key,
-        frames: this.anims.generateFrameNumbers(AssetKey.Kenney, { start, end }),
+        frames: this.anims.generateFrameNumbers(AssetKey.Sheet, { start, end }),
         frameRate: 8,
         repeat: -1,
       });

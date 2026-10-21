@@ -2,5 +2,5 @@ export const SceneKey = { Boot: 'Boot', Lobby: 'Lobby', Game: 'Game', Hud: 'Hud'
 
 export const AssetKey = {
   Arena: 'arena',
-  Kenney: 'kenney-tiny-dungeon',
+  Sheet: 'sprite-sheet',
 } as const;

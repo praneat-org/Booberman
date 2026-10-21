@@ -1,6 +1,6 @@
 import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
-import { KenneyFrame } from '../assets/kenneyTinyDungeon';
+import { SheetFrame } from '../assets/sheetFrames';
 import { GameAudio } from '../audio/GameAudio';
 import { MuteButton } from '../audio/MuteButton';
 import { loadMuted, saveMuted } from '../audio/muteStore';
@@ -66,7 +66,7 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     const map = this.make.tilemap({ key: AssetKey.Arena });
-    const tiles = map.addTilesetImage('tileset', AssetKey.Kenney);
+    const tiles = map.addTilesetImage('tileset', AssetKey.Sheet);
     if (!tiles) throw new Error('tileset "tileset" missing from arena.json');
     map.createLayer('ground', tiles, 0, 0);
 
@@ -84,7 +84,7 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.setViewport(0, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, BOARD_HEIGHT_PX);
     this.curseFrames = new CurseFrames(this, Depth.Curse, TILE_SIZE);
     this.marker = this.add
-      .image(0, 0, AssetKey.Kenney, KenneyFrame.marker)
+      .image(0, 0, AssetKey.Sheet, SheetFrame.marker)
       .setOrigin(0, 0)
       .setDepth(Depth.Marker)
       .setVisible(false);
@@ -252,7 +252,7 @@ export class GameScene extends Phaser.Scene {
     const views = this.round.boxes.list().map((b) => ({ key: `${b.x},${b.y}`, ...b }));
     this.sync(this.boxSprites, views, (v) =>
       this.add
-        .sprite(v.x * TILE_SIZE, v.y * TILE_SIZE, AssetKey.Kenney, KenneyFrame.box)
+        .sprite(v.x * TILE_SIZE, v.y * TILE_SIZE, AssetKey.Sheet, SheetFrame.box)
         .setOrigin(0, 0)
         .setDepth(Depth.Box),
     );
@@ -261,12 +261,12 @@ export class GameScene extends Phaser.Scene {
   private drawBombs(views: Drawable['bombs']): void {
     this.sync(this.bombSprites, views, (v) =>
       this.add
-        .sprite(v.px, v.py, AssetKey.Kenney, KenneyFrame.bomb)
+        .sprite(v.px, v.py, AssetKey.Sheet, SheetFrame.bomb)
         .setOrigin(0, 0)
         .setDepth(Depth.Bomb),
     );
     for (const v of views) {
-      // The Kenney pack has a single barrel frame; tint and pulse it as the fuse runs down.
+      // One bomb frame; tint and pulse it as the fuse runs down.
       this.bombSprites
         .get(v.key)
         ?.setTint(v.bright ? 0xffffff : 0x999999)
@@ -277,25 +277,25 @@ export class GameScene extends Phaser.Scene {
   private drawFlames(views: Drawable['flames']): void {
     this.sync(this.flameSprites, views, (v) =>
       this.add
-        .sprite(v.px, v.py, AssetKey.Kenney, KenneyFrame.flame[0])
+        .sprite(v.px, v.py, AssetKey.Sheet, SheetFrame.flame[0])
         .setOrigin(0, 0)
         .setDepth(Depth.Flame),
     );
     for (const v of views)
       this.flameSprites
         .get(v.key)
-        ?.setFrame(v.frame === 0 ? KenneyFrame.flame[0] : KenneyFrame.flame[1]);
+        ?.setFrame(v.frame === 0 ? SheetFrame.flame[0] : SheetFrame.flame[1]);
   }
 
   private drawItems(views: Drawable['items']): void {
     this.sync(this.itemSprites, views, (v) =>
       this.add
-        .sprite(v.px, v.py, AssetKey.Kenney, KenneyFrame.curse)
+        .sprite(v.px, v.py, AssetKey.Sheet, SheetFrame.curse)
         .setOrigin(0, 0)
         .setDepth(Depth.Item),
     );
     for (const v of views)
-      this.itemSprites.get(v.key)?.setFrame(v.frame === 0 ? KenneyFrame.curse : KenneyFrame.kick);
+      this.itemSprites.get(v.key)?.setFrame(v.frame === 0 ? SheetFrame.curse : SheetFrame.kick);
   }
 
   private drawPlayers(players: Drawable['players']): void {
@@ -305,15 +305,14 @@ export class GameScene extends Phaser.Scene {
       seen.add(view.id);
       let sprite = this.players.get(view.id);
       if (!sprite) {
-        sprite = this.add.sprite(0, 0, AssetKey.Kenney, KenneyFrame.player).setDepth(Depth.Player);
+        sprite = this.add.sprite(0, 0, AssetKey.Sheet, SheetFrame.idle.down).setDepth(Depth.Player);
         this.players.set(view.id, sprite);
       }
       // origin at the sprite centre so the death spin / shrink stays on the tile
       const bob = anim.moving ? Math.round(Math.sin(this.time.now / 80)) : 0;
       sprite
         .setOrigin(0.5, 0.5)
-        .setPosition(view.px + TILE_SIZE / 2, view.py + TILE_SIZE / 2 - bob)
-        .setFlipX(anim.facing === 'left');
+        .setPosition(view.px + TILE_SIZE / 2, view.py + TILE_SIZE / 2 - bob);
       sprite.setTint(view.tint);
       if (anim.phase === 'dying') {
         sprite.anims.stop();
@@ -340,7 +339,7 @@ export class GameScene extends Phaser.Scene {
     this.placeMarker(selfSprite);
   }
 
-  /** Kenney marker brackets our player; hidden while we are dead / not yet in the snapshot. */
+  /** Arrow marker above our player; hidden while we are dead / not yet in the snapshot. */
   private placeMarker(self: Sprite | undefined): void {
     if (!this.marker) return;
     if (!self) {
