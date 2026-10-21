@@ -146,6 +146,40 @@ export function rematchStatusText(v: RematchView): string {
   return `พร้อมแล้ว ${v.readyCount}/${v.total}: ${v.readyNames.join(', ')}`;
 }
 
+/** BE-57: the first round of a room needs this many players, all ready (the server's rule). */
+export const MIN_PLAYERS_TO_START = 2;
+export const WAITING_BUTTON_LABEL = 'พร้อม';
+
+export interface WaitingRow {
+  id: PlayerId;
+  name: string;
+  color: number;
+  isSelf: boolean;
+  ready: boolean;
+}
+
+/** The waiting room (BE-57): everyone in the room with a ready mark, from the roster + `rematchStatus`. */
+export function toWaitingRows(
+  status: RematchStatus | undefined,
+  roster: Roster,
+  selfId: PlayerId | undefined,
+): WaitingRow[] {
+  const ready = new Set(status?.ready ?? []);
+  return roster.ids().map((id) => ({
+    id,
+    name: nameOf(roster, id),
+    color: PLAYER_TINTS[id] ?? 0xffffff,
+    isSelf: id === selfId,
+    ready: ready.has(id),
+  }));
+}
+
+/** The line above the "ready" button while the room waits. */
+export function waitingStatusText(v: RematchView): string {
+  if (v.total < MIN_PLAYERS_TO_START) return 'รอเพื่อนเข้าห้อง (อย่างน้อย 2 คน) · ส่งลิงก์ห้องให้เพื่อนได้เลย';
+  return `พร้อมแล้ว ${v.readyCount}/${v.total} · เริ่มเมื่อทุกคนกดพร้อม`;
+}
+
 /** `undefined` while nobody has pressed (no countdown is running yet). */
 export function rematchCountdownText(secondsLeft: number | undefined): string | undefined {
   if (secondsLeft === undefined) return undefined;
