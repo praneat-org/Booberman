@@ -4,7 +4,7 @@ import type { PlayerRoundStats, ServerMessage } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
 import type { GameState } from '../src/game';
 import type { RoomDO } from '../src/room/RoomDO';
-import { type Client, join, v } from './helpers';
+import { begin, type Client, join, v } from './helpers';
 
 const stubFor = (room: string) => env.ROOM.get(env.ROOM.idFromName(room));
 type Event<K extends string> = Extract<ServerMessage, { t: 'event'; kind: K }>;
@@ -42,6 +42,7 @@ const bombNextToP2: Partial<GameState> = {
 describe('a 2-player room plays a round to the end (BE-39)', () => {
   it('last survivor: both clients get roundEnd { winner, lastAlive }', async () => {
     const a = await join('end1', 'A');
+    await begin('end1', a);
     const b = await join('end1', 'B');
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     await editState('end1', () => bombNextToP2);
@@ -76,6 +77,7 @@ describe('a 2-player room plays a round to the end (BE-39)', () => {
 
   it('time limit: draw with reason timeout', async () => {
     const a = await join('end2', 'A');
+    await begin('end2', a);
     const b = await join('end2', 'B');
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     await editState('end2', () => ({ tick: 2990 })); // 3000 - 10
@@ -86,6 +88,7 @@ describe('a 2-player room plays a round to the end (BE-39)', () => {
 
   it('the room keeps sending snapshots after the end, but the game stays frozen', async () => {
     const a = await join('end3', 'A');
+    await begin('end3', a);
     const b = await join('end3', 'B');
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     await editState('end3', () => bombNextToP2);
@@ -107,6 +110,7 @@ describe('a 2-player room plays a round to the end (BE-39)', () => {
 describe('a player leaving mid-round through the real RoomDO (BE-39, D32 item 1)', () => {
   it('1v1, both alive, p2 closes the socket: p1 gets roundEnd { p1, lastAlive } on the next tick', async () => {
     const a = await join('leave1', 'A');
+    await begin('leave1', a);
     const b = await join('leave1', 'B');
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     b.close();
@@ -128,6 +132,7 @@ describe('a player leaving mid-round through the real RoomDO (BE-39, D32 item 1)
 
   it('3 players, p3 already dead, p2 closes: p1 wins (same result as 1v1)', async () => {
     const a = await join('leave3', 'A');
+    await begin('leave3', a);
     const b = await join('leave3', 'B');
     const c = await join('leave3', 'C');
     await c.next((m) => m.t === 'snapshot' && m.players.length === 3);
@@ -144,6 +149,7 @@ describe('a player leaving mid-round through the real RoomDO (BE-39, D32 item 1)
 
   it('playing alone from the start: no roundEnd by elimination (and a second player leaving later does end it)', async () => {
     const a = await join('leave4', 'A');
+    await begin('leave4', a);
     await new Promise((r) => setTimeout(r, 300));
     expect(a.received.filter(roundEnd)).toHaveLength(0);
     const b = await join('leave4', 'B');
@@ -157,6 +163,7 @@ describe('a player leaving mid-round through the real RoomDO (BE-39, D32 item 1)
 describe('RoomDO.startRound(seed) (D8)', () => {
   it('broadcasts roundStart { seed, grid } and the next round is playable', async () => {
     const a = await join('round1x', 'A');
+    await begin('round1x', a);
     const b = await join('round1x', 'B');
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     await editState('round1x', () => bombNextToP2);
@@ -187,6 +194,7 @@ describe('RoomDO.startRound(seed) (D8)', () => {
 
   it('the grid of the new round is the one generated from the seed, same as for a newcomer', async () => {
     const a = await join('round2x', 'A');
+    await begin('round2x', a);
     await a.next((m) => m.t === 'snapshot');
     await runInDurableObject(stubFor('round2x'), (r: RoomDO) => r.startRound(777));
     const start = await a.next(roundStart);
@@ -199,6 +207,7 @@ describe('RoomDO.startRound(seed) (D8)', () => {
 
   it('is a no-op in an empty room', async () => {
     const a = await join('round3x', 'A');
+    await begin('round3x', a);
     a.close();
     await new Promise((r) => setTimeout(r, 100));
     await runInDurableObject(stubFor('round3x'), async (r: RoomDO) => {
@@ -209,6 +218,7 @@ describe('RoomDO.startRound(seed) (D8)', () => {
 
   it('does not leave a tick timer behind when the room empties after a round', async () => {
     const a = await join('round4x', 'A');
+    await begin('round4x', a);
     const b = await join('round4x', 'B');
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     await editState('round4x', () => bombNextToP2);
@@ -226,6 +236,7 @@ describe('a bomb outlives its owner (BE-51 / D33)', () => {
 
   it('a newcomer in the freed slot gets a new session and the old bomb is not theirs', async () => {
     const a = await join('own1', 'A');
+    await begin('own1', a);
     const b = await join('own1', 'B');
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     const oldSession = (await readState('own1'))?.players.find((p) => p.id === 'p2')?.session;

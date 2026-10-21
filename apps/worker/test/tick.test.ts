@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { InputQueue } from '../src/room/inputQueue';
 import type { RoomDO } from '../src/room/RoomDO';
 import { TickStats } from '../src/room/tickStats';
-import { type Client, connect, join, v } from './helpers';
+import { begin, type Client, connect, join, v } from './helpers';
 
 const stubFor = (room: string) => env.ROOM.get(env.ROOM.idFromName(room));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -19,6 +19,7 @@ const input = (c: Client, seq: number, dir = 'right', bomb = false) =>
 describe('leave clears the slot in the game state', () => {
   it('a leaver is removed from the state at once, so a rejoin into the slot starts fresh', async () => {
     const a = await join('leave1', 'A');
+    await begin('leave1', a);
     const b = await join('leave1', 'B');
     input(b, 7, 'down');
     await b.next((m) => m.t === 'snapshot' && m.ackSeq === 7);
@@ -43,6 +44,7 @@ describe('leave clears the slot in the game state', () => {
 describe('tick loop 20Hz (AC 1, 2)', () => {
   it('one player gets about 20 snapshots in one second, then nothing once the room is empty', async () => {
     const a = await join('tick1', 'A');
+    await begin('tick1', a);
     expect((await roomState('tick1')).ticking).toBe(true);
     const start = snapshots(a).length;
     await sleep(1000);
@@ -63,6 +65,7 @@ describe('tick loop 20Hz (AC 1, 2)', () => {
 
   it('keeps ticking while someone is left and stops with the last one', async () => {
     const a = await join('tick2', 'A');
+    await begin('tick2', a);
     const b = await join('tick2', 'B');
     a.close();
     await sleep(150);
@@ -82,6 +85,7 @@ describe('tick loop 20Hz (AC 1, 2)', () => {
 
   it('a socket that errors out also stops the loop', async () => {
     const a = await join('tick3', 'A');
+    await begin('tick3', a);
     await runInDurableObject(stubFor('tick3'), async (r: RoomDO) => {
       for (const p of r.players()) await r.webSocketError(p.ws);
     });
@@ -91,9 +95,11 @@ describe('tick loop 20Hz (AC 1, 2)', () => {
 
   it('a room restarts cleanly after it emptied', async () => {
     const a = await join('tick4', 'A');
+    await begin('tick4', a);
     a.close();
     await sleep(100);
     const b = await join('tick4', 'B');
+    await begin('tick4', b);
     const first = await b.next((m) => m.t === 'snapshot');
     expect(first.t === 'snapshot' && first.tick).toBe(1);
     b.close();
@@ -101,6 +107,7 @@ describe('tick loop 20Hz (AC 1, 2)', () => {
 
   it('late joiner appears in the next snapshots at its spawn point', async () => {
     const a = await join('tick5', 'A');
+    await begin('tick5', a);
     const b = await join('tick5', 'B');
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     const last = snapshots(a).at(-1);
@@ -114,6 +121,7 @@ describe('tick loop 20Hz (AC 1, 2)', () => {
 describe('input queue (AC 5)', () => {
   it('applies input on the tick and acks per player', async () => {
     const a = await join('inp1', 'A');
+    await begin('inp1', a);
     const b = await join('inp1', 'B');
     input(a, 1, 'down');
     input(a, 2, 'down');
@@ -133,6 +141,7 @@ describe('input queue (AC 5)', () => {
 
   it('drops duplicate and old seq', async () => {
     const a = await join('inp2', 'A');
+    await begin('inp2', a);
     input(a, 5, 'right');
     await a.next((m) => m.t === 'snapshot' && m.ackSeq === 5);
     // D27: the server keeps the held direction, so release (`none`) and wait until the step
@@ -152,6 +161,7 @@ describe('input queue (AC 5)', () => {
 
   it('keeps walking the held direction with no further input, stops on none (D27)', async () => {
     const a = await join('inp6', 'A');
+    await begin('inp6', a);
     await a.next((m) => m.t === 'snapshot'); // the first tick creates the game state
     // open floor so the walk is not tied to the random board
     await runInDurableObject(stubFor('inp6'), (room: RoomDO) => {
@@ -177,6 +187,7 @@ describe('input queue (AC 5)', () => {
 
   it('drops inputs beyond 30 per second from one player', async () => {
     const a = await join('inp3', 'A');
+    await begin('inp3', a);
     for (let seq = 0; seq < 50; seq++) input(a, seq, 'none');
     await sleep(300);
     const { inputs } = await roomState('inp3');
@@ -190,6 +201,7 @@ describe('input queue (AC 5)', () => {
 
   it('one spammer does not eat another player’s budget', async () => {
     const a = await join('inp4', 'A');
+    await begin('inp4', a);
     const b = await join('inp4', 'B');
     for (let seq = 0; seq < 100; seq++) input(a, seq, 'none');
     input(b, 0, 'left');
@@ -245,6 +257,7 @@ describe('tick stats (AC 6)', () => {
 
   it('a 4-player room records ticks', async () => {
     const four = await Promise.all(['A', 'B', 'C', 'D'].map((n) => join('stat1', n)));
+    await begin('stat1', ...four);
     await sleep(500);
     const st = await roomState('stat1');
     expect(st.ticks).toBeGreaterThan(5);
