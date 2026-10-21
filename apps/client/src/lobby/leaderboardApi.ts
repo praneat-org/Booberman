@@ -2,6 +2,7 @@ import { LEADERBOARD_PATH, type LeaderboardBy, LeaderboardResponse } from '@boob
 
 export type LeaderboardResult =
   | { status: 'ok'; by: LeaderboardBy; entries: LeaderboardResponse['entries'] }
+  | { status: 'aborted' }
   | { status: 'error' };
 
 /** `GET /api/leaderboard?by=`. Never throws; a body for the wrong tab (`by` mismatch) is an error too. */
@@ -17,7 +18,9 @@ export async function fetchLeaderboard(
     return body.success && body.data.by === by
       ? { status: 'ok', by, entries: body.data.entries }
       : { status: 'error' };
-  } catch {
+  } catch (e) {
+    // a tab switch cancelling the request is not a failure to show
+    if (e instanceof DOMException && e.name === 'AbortError') return { status: 'aborted' };
     return { status: 'error' };
   }
 }

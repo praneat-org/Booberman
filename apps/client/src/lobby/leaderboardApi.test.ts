@@ -27,6 +27,13 @@ describe('fetchLeaderboard', () => {
     });
   });
 
+  it('reports a cancelled request as aborted, not error', async () => {
+    const abort = new DOMException('cancelled', 'AbortError');
+    expect(await fetchLeaderboard('wins', fetchOf(abort as unknown as Error))).toEqual({
+      status: 'aborted',
+    });
+  });
+
   it('turns http errors, bad bodies, wrong tab and network failures into error', async () => {
     const bad = fetchOf(json({ error: 'BAD_BY' }, { status: 400 }));
     expect(await fetchLeaderboard('wins', bad)).toEqual(err);

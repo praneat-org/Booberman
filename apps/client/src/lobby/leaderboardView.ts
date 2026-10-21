@@ -28,7 +28,7 @@ export type LeaderboardView = 'loading' | 'error' | 'empty' | 'rows';
 
 /** `null` = request in flight. */
 export function leaderboardView(result: LeaderboardResult | null): LeaderboardView {
-  if (result === null) return 'loading';
+  if (result === null || result.status === 'aborted') return 'loading';
   if (result.status === 'error') return 'error';
   return result.entries.length === 0 ? 'empty' : 'rows';
 }

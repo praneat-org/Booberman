@@ -56,7 +56,11 @@ export class LobbyScene extends Phaser.Scene {
         break;
       case 'leaderboard': {
         const overlay = new LeaderboardOverlay(this.parent(), () => window.location.assign('/'));
-        const cleanup = () => overlay.destroy();
+        const cleanup = () => {
+          this.events.off(Phaser.Scenes.Events.SHUTDOWN, cleanup);
+          this.events.off(Phaser.Scenes.Events.DESTROY, cleanup);
+          overlay.destroy();
+        };
         this.events.once(Phaser.Scenes.Events.SHUTDOWN, cleanup);
         this.events.once(Phaser.Scenes.Events.DESTROY, cleanup);
         break;

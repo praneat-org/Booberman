@@ -69,8 +69,9 @@ export class LeaderboardOverlay {
     }
     this.body.setAttribute('aria-labelledby', `bb-tab-${by}`);
     this.render(by, null);
+    // fetchLeaderboard never rejects (everything is caught inside), so no .catch here
     void fetchLeaderboard(by, fetch, abort.signal).then((result) => {
-      if (!abort.signal.aborted) this.render(by, result);
+      if (!abort.signal.aborted && result.status !== 'aborted') this.render(by, result);
     });
   }
 
