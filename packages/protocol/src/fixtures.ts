@@ -46,14 +46,14 @@ export const exampleSnapshot = {
   tick: 1280,
   ackSeq: 42,
   players: [
-    { id: 'p1', x: 1, y: 1, alive: true, curse: 0, teleport: false },
+    { id: 'p1', x: 1, y: 1, alive: true, curse: 0, teleport: false, kick: true },
     { id: 'p2', x: 3.4, y: 5, alive: true, curse: 120, teleport: false },
     { id: 'p3', x: 11, y: 9, alive: false, curse: 0, teleport: true },
     { id: 'p4', x: 9, y: 2.75, alive: true, curse: 0, teleport: false },
   ],
   bombs: [
     { x: 3, y: 4, fuse: 12 },
-    { x: 7, y: 5, fuse: 40 },
+    { x: 7, y: 5, fuse: 40, slide: 'right' },
     { x: 9, y: 3, fuse: 2 },
     { x: 5, y: 7, fuse: 25 },
   ],

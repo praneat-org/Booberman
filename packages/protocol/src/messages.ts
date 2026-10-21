@@ -88,9 +88,21 @@ export const PlayerState = z.object({
   curse: z.number().int().min(0),
   /** Place immediately instead of interpolating (e.g. became a ghost). */
   teleport: z.boolean(),
+  /** BE-45: holds the kick item (until death). Sent only when true; absent = false. */
+  kick: z.boolean().optional(),
 });
 
-export const BombState = z.object({ x: TileX, y: TileY, fuse: z.number().int().min(0) });
+export const BombState = z.object({
+  x: TileX,
+  y: TileY,
+  fuse: z.number().int().min(0),
+  /**
+   * BE-45: the bomb is sliding after a kick, in this direction. Sent only while it slides. `x` / `y`
+   * stay whole tiles (D16): a sliding bomb hops one tile every 2 ticks, so the client tweens
+   * between the hops. Not sent once it stops.
+   */
+  slide: z.enum(['up', 'down', 'left', 'right']).optional(),
+});
 export const FlameTile = z.tuple([TileX, TileY]);
 export const ItemState = z.object({ x: TileX, y: TileY, kind: ItemKind });
 
@@ -131,8 +143,7 @@ export type RoundEndReason = z.infer<typeof RoundEndReason>;
 /**
  * Why a player died, decided on the server by the credit table of CAR-3798 (first match wins):
  * `curse` = they carried a curse someone else gave them (credit to that someone), `ghost` / `kick`
- * = the flame came from a ghost's bomb / a kicked bomb (reserved: BE-46 / BE-45 do not send them
- * yet), `bomb` = a normal bomb, `self` = the credit fell on the victim themselves (killer = victim).
+ * = the flame came from a ghost's bomb (BE-46) / a kicked bomb (BE-45, credit to the kicker), `bomb` = a normal bomb, `self` = the credit fell on the victim themselves (killer = victim).
  */
 export const KillCause = z.enum(['curse', 'ghost', 'kick', 'bomb', 'self']);
 export type KillCause = z.infer<typeof KillCause>;

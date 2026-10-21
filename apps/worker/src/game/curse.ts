@@ -70,8 +70,8 @@ const cured = (p: PlayerSim): PlayerSim => ({
  *    N+1..N+curseTicks, and can be handed back exactly `curseTransferCooldownTicks` ticks later;
  * 2. pick up: a living, uncursed player standing on an item takes it (players in id order, so two
  *    on the same tile get it by id). A curse item curses them for `curseTicks`, credited to whoever
- *    broke the box (`null` if that was the player themselves). Any other item is used up with no
- *    effect for now (kick: CAR-3801). A cursed player walks over curse items without taking them;
+ *    broke the box (`null` if that was the player themselves). A kick item sets `hasKick`
+ *    (kick.ts). A cursed player walks over curse items without taking them (a kick item they do take);
  * 3. contact: a cursed player (not one who picked it up this very tick) on the same tile as living, uncursed players passes the curse to the
  *    first of them by id, skipping `cursedBy` while the hand-back cooldown runs. It lasts for what
  *    was left or `curseMinTicksAfterTransfer` if more, `cursedBy` becomes the sender, and the
@@ -103,11 +103,13 @@ export function stepCurses(
   const left = [...items];
   const fresh = new Set<PlayerId>(); // picked a curse up this tick: felt for a tick before passing on
   next = next.map((p) => {
-    if (!p.alive || p.curse > 0) return p;
-    const at = left.findIndex((it) => `${it.x},${it.y}` === tileOf(p));
+    if (!p.alive) return p;
+    const at = left.findIndex(
+      (it) => `${it.x},${it.y}` === tileOf(p) && (p.curse <= 0 || it.kind !== 'curse'),
+    );
     if (at < 0) return p;
     const [item] = left.splice(at, 1) as [Item];
-    if (item.kind !== 'curse') return p;
+    if (item.kind === 'kick') return { ...p, hasKick: true };
     fresh.add(p.id);
     if (item.droppedBySession === p.session) return withCurse(p, cfg.curseTicks, null, 0);
     const breaker = players.find((q) => q.session === item.droppedBySession);
