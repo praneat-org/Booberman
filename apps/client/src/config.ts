@@ -12,7 +12,8 @@ export const config: Phaser.Types.Core.GameConfig = {
   roundPixels: true,
   backgroundColor: '#1b1b2f',
   // asset paths are relative ('maps/arena.json'); without this /room/:id would resolve them to /room/maps/... (SPA fallback HTML)
-  loader: { baseURL: import.meta.env.BASE_URL },
+  // crossOrigin: files from the asset bucket (another origin, FE-16) need CORS; absolute URLs ignore baseURL
+  loader: { baseURL: import.meta.env.BASE_URL, crossOrigin: 'anonymous' },
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,

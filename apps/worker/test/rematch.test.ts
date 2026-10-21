@@ -4,7 +4,7 @@ import type { ServerMessage } from '@booberman/protocol';
 import { describe, expect, it } from 'vitest';
 import type { GameState } from '../src/game';
 import { REMATCH_WINDOW_MS, type RoomDO } from '../src/room/RoomDO';
-import { type Client, connect, isEvent, join, v } from './helpers';
+import { begin, type Client, connect, isEvent, join, v } from './helpers';
 
 const stubFor = (room: string) => env.ROOM.get(env.ROOM.idFromName(room));
 type Event<K extends string> = Extract<ServerMessage, { t: 'event'; kind: K }>;
@@ -46,6 +46,7 @@ const editState = (room: string, edit: (s: GameState) => Partial<GameState>) =>
 async function room(id: string, names: string[]) {
   const clients: (Client & { playerId: string })[] = [];
   for (const n of names) clients.push(await join(id, n));
+  await begin(id, ...clients);
   const last = clients.at(-1);
   await last?.next((m) => m.t === 'snapshot' && m.players.length === names.length);
   return clients;
@@ -342,6 +343,7 @@ describe('who is in the room when the round ends or restarts (BE-41, D32, D33)',
 
   it('a round nobody played against that ran out: a friend joining starts a fresh round for both', async () => {
     const a = await join('late2', 'A');
+    await begin('late2', a);
     await a.next((m) => m.t === 'snapshot');
     await editState('late2', () => ({ tick: 2999 }));
     await a.next(roundEnd); // alone, so a draw by timeout
@@ -366,6 +368,7 @@ describe('who is in the room when the round ends or restarts (BE-41, D32, D33)',
 
   it('the host dies alone, a friend joins: a new round, not an instant win for the newcomer', async () => {
     const a = await join('late3', 'A');
+    await begin('late3', a);
     await a.next((m) => m.t === 'snapshot');
     await editState('late3', (s) => ({
       players: s.players.map((p) => ({ ...p, alive: false })),
@@ -384,6 +387,7 @@ describe('who is in the room when the round ends or restarts (BE-41, D32, D33)',
 
   it('a contested round in progress is NOT restarted by a late joiner', async () => {
     const a = await join('late4', 'A');
+    await begin('late4', a);
     const b = await join('late4', 'B');
     await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
     const c = await join('late4', 'C');

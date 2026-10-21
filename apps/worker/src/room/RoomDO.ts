@@ -16,6 +16,8 @@ import {
   toSnapshot,
 } from '../game';
 import { InputQueue } from './inputQueue';
+import { buildMatchRecord } from './matchRecord';
+import { saveMatch } from './matchStore';
 import { RoomKvSync } from './roomKv';
 import { TickStats } from './tickStats';
 
@@ -56,6 +58,8 @@ export const TICK_MS = 50;
 export const STATS_LOG_EVERY_TICKS = 100;
 /** D9: the next round starts this long after the first "play again" press, ready or not. */
 export const REMATCH_WINDOW_MS = 15_000;
+/** BE-57: the first round of a room waits for this many players, all ready. */
+export const MIN_PLAYERS_TO_START = 2;
 
 /**
  * One Durable Object = one room (`idFromName(roomId)`).
@@ -89,6 +93,19 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   private rematchDeadline = 0;
   /** True while a rematch is being set up (an await in the middle): a second trigger does nothing. */
   private restarting = false;
+  /**
+   * BE-57: no round has started since the room got its first player. The loop runs (KV heartbeat)
+   * but the game does not: no snapshots, inputs dropped. `rematch` doubles as "ready"; the first
+   * round starts once at least two players are in and all of them are ready. Also stored under
+   * `waiting`, so a DO that wakes up does not start a round on its own.
+   */
+  private waiting = false;
+  /**
+   * BE-42: epoch ms at which the round on the board began (`matches.started_at`); 0 = not known yet.
+   * In memory only, on purpose: after an eviction the round is rebuilt from scratch (`recoverRound`),
+   * so it starts counting again. Never read by `src/game/` (no clock in there).
+   */
+  private roundStartedAt = 0;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -98,7 +115,8 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       if (!first) return;
       this.room = attachmentOf(first.ws).room;
       this.seedCache = await this.seed();
-      await this.recoverRound();
+      this.waiting = (await ctx.storage.get<boolean>('waiting')) === true;
+      if (!this.waiting) await this.recoverRound();
       this.startLoop();
     });
   }
@@ -202,6 +220,10 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 
     // decided now, before the first await: a tick in between would already count the newcomer
     const startOver = this.unplayed();
+    if (!this.state && !this.waiting) {
+      this.waiting = true;
+      void this.ctx.storage.put('waiting', true).catch(logFailure('waiting-save'));
+    }
     // one id per join (D33), taken synchronously so two joins can never share it
     const session = this.nextSession++;
     void this.ctx.storage.put('nextSession', this.nextSession);
@@ -224,6 +246,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     }
     this.broadcast({ v, t: 'event', kind: 'playerJoined', playerId, nickname }, ws);
     if (startOver) await this.startRound(randomSeed());
+    else if (this.waiting) send(ws, this.rematchStatus());
     else this.replayEndScreen(ws);
     this.startLoop();
   }
@@ -306,6 +329,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     await this.ctx.storage.transaction(async (txn) => {
       await txn.put('seed', seed);
       await txn.delete('roundEnd');
+      await txn.delete('waiting');
     });
     await this.ctx.storage.deleteAlarm();
     const players = this.players();
@@ -317,23 +341,27 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     );
     this.seedCache = state.seed;
     this.state = state;
+    this.roundStartedAt = Date.now();
     this.queue.clear();
     this.roundEnd = undefined;
+    this.waiting = false;
     this.clearReady(players);
     for (const e of events) this.broadcast(e);
   }
 
   // ── rematch (D9) ──────────────────────────────────────────────────────────
   // Who can start a round: nobody directly. A client can only say `rematch` (ready), and only
-  // while the end screen is up; the round starts when every player in the room is ready, or when
-  // the alarm fires REMATCH_WINDOW_MS after the first press. The seed is always picked here.
+  // while the end screen is up or the room is waiting (BE-57); the round starts when every player
+  // in the room is ready, or when the alarm fires REMATCH_WINDOW_MS after the first press (end
+  // screen only: a waiting room has no countdown). The seed is always picked here.
 
   private async rematch(ws: WebSocket): Promise<void> {
     const a = attachmentOf(ws);
-    if (!a.joined || !this.state?.result) return; // no end screen: a stale or early press, ignore
+    if (!a.joined || !this.canStart()) return; // no end screen / waiting room: a stale or early press, ignore
     if (a.ready) return send(ws, this.rematchStatus()); // pressed already: repeat the status, change nothing
     ws.serializeAttachment({ ...a, ready: true } satisfies Attachment);
     if (this.everyoneReady()) return this.startRematch();
+    if (this.waiting) return this.broadcast(this.rematchStatus());
     if (this.rematchDeadline === 0) {
       this.rematchDeadline = Date.now() + REMATCH_WINDOW_MS;
       await this.ctx.storage.setAlarm(this.rematchDeadline);
@@ -343,7 +371,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 
   /** Starts the next round of a finished one. Idempotent: a second call while one runs, or after it ran, does nothing. */
   private async startRematch(): Promise<void> {
-    if (this.restarting || !this.state?.result) return;
+    if (this.restarting || !this.canStart()) return;
     this.restarting = true;
     try {
       await this.startRound(randomSeed());
@@ -354,9 +382,13 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 
   /** Someone left during the end screen: their press is gone, so re-check who is ready. */
   private async rematchAfterLeave(): Promise<void> {
-    if (this.rematchDeadline === 0 || !this.state?.result) return; // nobody had pressed
     const players = this.players();
     if (players.length === 0) return; // empty room: `stopLoop` already dropped the countdown
+    if (this.waiting) {
+      if (this.everyoneReady()) return this.startRematch();
+      return this.broadcast(this.rematchStatus());
+    }
+    if (this.rematchDeadline === 0 || !this.state?.result) return; // nobody had pressed
     const ready = players.filter((p) => p.ready).length;
     if (ready === players.length) return this.startRematch();
     if (ready === 0) {
@@ -381,7 +413,14 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 
   private everyoneReady(): boolean {
     const players = this.players();
-    return players.length > 0 && players.every((p) => p.ready);
+    // BE-57: the first round needs an opponent; a rematch may go on with whoever is left
+    const min = this.waiting ? MIN_PLAYERS_TO_START : 1;
+    return players.length >= min && players.every((p) => p.ready);
+  }
+
+  /** A press of "ready" counts: the end screen is up, or the room waits for its first round. */
+  private canStart(): boolean {
+    return this.waiting || this.state?.result !== undefined;
   }
 
   private clearReady(players: readonly Player[]): void {
@@ -417,6 +456,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       return;
     }
     this.state = state;
+    this.roundStartedAt = Date.now();
     this.clearReady(players);
     await this.ctx.storage.deleteAlarm();
     for (const e of events) this.broadcast(e);
@@ -432,8 +472,13 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (this.loop !== null) clearInterval(this.loop);
     this.loop = null;
     this.state = undefined;
+    this.roundStartedAt = 0;
     this.queue.clear();
     this.forgetEndScreen();
+    if (this.waiting) {
+      this.waiting = false;
+      void this.ctx.storage.delete('waiting').catch(logFailure('waiting-delete'));
+    }
     if (this.stats.total > 0) this.logStats('tick-stats-final');
     this.stats.reset();
   }
@@ -460,13 +505,22 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       return;
     }
     this.kvSync()?.heartbeat(players.length);
+    if (this.waiting) {
+      this.queue.drain(); // nothing moves before the first round
+      return;
+    }
     const started = performance.now();
     try {
+      // the round on the board starts being played now (first tick of a room / of a round nobody announced)
+      if (this.roundStartedAt === 0 && !this.state?.result) this.roundStartedAt = Date.now();
       const { state, events } = simulate(this.syncPlayers(players), this.queue.drain());
       this.state = state;
       for (const e of events) this.broadcast(e);
       const end = events.find((e): e is RoundEndEvent => e.kind === 'roundEnd');
-      if (end) this.rememberEndScreen(end);
+      if (end) {
+        this.rememberEndScreen(end);
+        this.recordMatch(end, state, players);
+      }
       for (const p of players) send(p.ws, toSnapshot(state, p.playerId));
     } catch (error) {
       console.error(JSON.stringify({ msg: 'tick-failed', error: String(error) }));
@@ -474,6 +528,34 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     // note: workerd's clock only advances on I/O, so on a pure CPU tick this can read 0
     this.stats.record(performance.now() - started);
     if (this.stats.total % STATS_LOG_EVERY_TICKS === 0) this.logStats('tick-stats');
+  }
+
+  /**
+   * BE-42 / D12: stores the finished round in D1 without making anybody wait for it. The write is
+   * handed to `ctx.waitUntil` (in a Durable Object a pending waitUntil promise keeps the object from
+   * being evicted until it settles, so a deploy or idle moment does not drop the write) and is never
+   * awaited: the end screen, the next tick and the rematch do not depend on D1. A failure (D1 down,
+   * slow, batch rejected) is logged and the game goes on; the result is simply lost, as D12 accepts.
+   * Never throws: a bug in building the record must not cost the room its tick.
+   */
+  private recordMatch(end: RoundEndEvent, state: GameState, players: readonly Player[]): void {
+    const startedAt = this.roundStartedAt;
+    this.roundStartedAt = 0; // the next round (startRound) sets it again
+    try {
+      const record = buildMatchRecord(end, {
+        id: crypto.randomUUID(),
+        roomId: this.room,
+        seed: state.seed,
+        startedAt: startedAt === 0 ? Date.now() : startedAt,
+        endedAt: Date.now(),
+        nicknames: new Map(players.map((p) => [p.playerId, p.nickname] as const)),
+      });
+      this.ctx.waitUntil(
+        saveMatch(this.env.DB, record).catch(logFailure('match-save', { match: record.id })),
+      );
+    } catch (error) {
+      logFailure('match-save', { room: this.room })(error);
+    }
   }
 
   /** Game state follows the sockets: new first tick, a late joiner or a leaver all land here. */
@@ -521,8 +603,10 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 /** A new round's seed, picked here and never by a client (`game/` may not use randomness). */
 const randomSeed = (): number => crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
 
-const logFailure = (msg: string) => (error: unknown) =>
-  console.error(JSON.stringify({ msg, error: String(error) }));
+const logFailure =
+  (msg: string, extra: Record<string, string> = {}) =>
+  (error: unknown) =>
+    console.error(JSON.stringify({ msg, ...extra, error: String(error) }));
 
 const sessionsOf = (players: readonly Player[]) =>
   new Map(players.map((p) => [p.playerId, p.session] as const));
