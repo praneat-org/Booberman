@@ -55,6 +55,21 @@ describe('invalid messages', () => {
     expect(bad({ ...join, nickname: 7 })).toBe('BAD_MESSAGE');
   });
 
+  it('reconnect token (BE-44): optional on join, bounded, required on welcome', () => {
+    expect(bad(join)).toBe('ok'); // no token = a normal join
+    expect(bad({ ...join, token: 'abc123' })).toBe('ok');
+    // the server decides if a token is right: a wrong one is parsed fine and answered INVALID_TOKEN
+    expect(bad({ ...join, token: 'x'.repeat(64) })).toBe('ok');
+    expect(bad({ ...join, token: '' })).toBe('BAD_MESSAGE');
+    expect(bad({ ...join, token: 'x'.repeat(65) })).toBe('BAD_MESSAGE');
+    expect(bad({ ...join, token: 42 })).toBe('BAD_MESSAGE');
+    const { token: _t, ...noToken } = exampleServerMessages.welcome;
+    expect(parseServerMessage(noToken).ok).toBe(false);
+    expect(parseServerMessage(exampleServerMessages.welcome).ok).toBe(true);
+    const err = { ...exampleServerMessages.error, code: 'INVALID_TOKEN' };
+    expect(parseServerMessage(err).ok).toBe(true);
+  });
+
   it('unknown t', () => {
     expect(bad({ v: 1, t: 'teleport' })).toBe('BAD_MESSAGE');
     expect(bad({ v: 1 })).toBe('BAD_MESSAGE');

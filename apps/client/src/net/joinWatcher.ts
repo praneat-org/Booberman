@@ -122,6 +122,8 @@ export function failureForError(code: ErrorCode): JoinFailureKind {
     case 'VERSION_MISMATCH':
       return code;
     case 'BAD_MESSAGE':
+    // BE-44: this client never sends a reconnect token yet (FE-22), so the server cannot answer with this
+    case 'INVALID_TOKEN':
       return 'CONNECT_FAILED';
   }
 }
