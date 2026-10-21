@@ -69,7 +69,8 @@ describe('waiting room before the first round (BE-57)', () => {
     const a = await join('wait5', 'A');
     const b = await join('wait5', 'B');
     ready(a);
-    await a.next(isEvent('rematchStatus'));
+    // the join already sent a `rematchStatus` with nobody ready: wait for the one that counts our press
+    await a.next((m) => m.t === 'event' && m.kind === 'rematchStatus' && m.ready.includes('p1'));
     b.close();
     await a.next(isEvent('playerLeft'));
     await sleep(200);

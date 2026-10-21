@@ -165,6 +165,7 @@ export class EndOverlay {
     this.builtWaiting = key;
     const head = el('h2', 'bb-end-head', 'รอผู้เล่น');
     head.dataset.testid = 'waiting-headline';
+    this.root.setAttribute('aria-label', 'ห้องรอ');
     const list = el('ul', 'bb-end-titles');
     list.style.marginTop = '12px';
     list.dataset.testid = 'waiting-players';
@@ -191,6 +192,7 @@ export class EndOverlay {
   private build(end: EndView): void {
     this.built = end;
     this.builtWaiting = undefined;
+    this.root.setAttribute('aria-label', 'สรุปรอบนี้');
     this.pressedAt = undefined;
     const head = el('h2', end.youWon ? 'bb-end-head bb-win' : 'bb-end-head', end.headline);
     head.dataset.testid = 'end-headline';
