@@ -55,6 +55,7 @@ function landingTile(
   survivors: readonly PlayerSim[],
   cfg: GameConfig,
 ): readonly [number, number] | undefined {
+  if (survivors.length === 0) return undefined; // nobody to aim at (and `Math.min()` would be Infinity)
   const [dx, dy] = VECTORS[inward(g.x, g.y)];
   let best: readonly [number, number] | undefined;
   let bestDist = Number.POSITIVE_INFINITY;
