@@ -39,6 +39,14 @@ export interface WsTransportOptions {
   createSocket?: (url: string) => SocketLike;
   /** Where the reconnect token survives a page reload. Defaults to `sessionStorage`. */
   tokens?: TokenStore;
+  /** Calls `cb` when the page is being left (reload, navigation, tab closing). Defaults to `pagehide`. */
+  onPageHide?: (cb: () => void) => Unsubscribe;
+}
+
+function browserPageHide(cb: () => void): Unsubscribe {
+  if (typeof window === 'undefined') return () => {};
+  window.addEventListener('pagehide', cb);
+  return () => window.removeEventListener('pagehide', cb);
 }
 
 /** `/ws/room/:id` on the same origin; `wss` when the page is https. */
@@ -66,10 +74,13 @@ type Listeners = {
  * A deliberate `disconnect()` fires nothing. Input is dropped while the socket is not open: nothing is
  * queued, the scene sends the held direction again once we are back.
  *
- * Reconnecting (BE-44 / FE-22): the token of the latest `welcome` is kept in memory and in
- * `sessionStorage`, and every `join` sends it, so `connect()` after a drop asks for the old slot back
- * (the Reconnector decides when to call it). A token left over from an earlier page load that the server
- * no longer knows is not an error: the join is repeated without it. `disconnect()` forgets the token.
+ * Reconnecting (BE-44 / FE-22): the token of the latest `welcome` is kept in memory, and every `join`
+ * sends it, so `connect()` after a drop asks for the old slot back (the Reconnector decides when to call
+ * it). It goes into `sessionStorage` only when the page is being left (`pagehide`), and is taken out again
+ * as soon as the next page reads it: a reload picks the slot up, but a duplicated tab, which gets a copy
+ * of `sessionStorage` while the first tab is still playing, finds nothing and joins as a newcomer. A token
+ * left over from an earlier page load that the server no longer knows is not an error: the join is
+ * repeated without it. `disconnect()` forgets the token.
  */
 export class WsTransport implements Transport {
   private readonly listeners: Listeners = {
@@ -87,15 +98,20 @@ export class WsTransport implements Transport {
   private token: string | undefined;
   /** The token was read from storage (an earlier page load), not issued to this transport: it may be stale. */
   private tokenFromStorage: boolean;
+  private offPageHide: Unsubscribe | undefined;
 
   constructor(private readonly opts: WsTransportOptions) {
     this.tokens = opts.tokens ?? sessionTokenStore();
     this.token = this.tokens.load(opts.roomId);
     this.tokenFromStorage = this.token !== undefined;
+    // claimed: this page owns the slot now, so a copy of this tab's storage must not carry it
+    this.tokens.clear();
+    this.watchPageHide();
   }
 
   connect(): void {
     if (this.socket) return;
+    this.watchPageHide();
     const { roomId, nickname } = this.opts;
     const url = roomSocketUrl(roomId, this.opts.location ?? window.location);
     const socket = (
@@ -134,6 +150,8 @@ export class WsTransport implements Transport {
   disconnect(): void {
     // leaving for good (or giving up): the slot is not ours any more
     this.forgetToken();
+    this.offPageHide?.();
+    this.offPageHide = undefined;
     const socket = this.socket;
     if (!socket) return;
     this.detach();
@@ -186,6 +204,14 @@ export class WsTransport implements Transport {
     socket.send(JSON.stringify(msg));
   }
 
+  /** The page is going away: leave the token where the next page of this tab can find it. */
+  private watchPageHide(): void {
+    if (this.offPageHide) return;
+    this.offPageHide = (this.opts.onPageHide ?? browserPageHide)(() => {
+      if (this.token !== undefined) this.tokens.save(this.opts.roomId, this.token);
+    });
+  }
+
   private forgetToken(): void {
     this.token = undefined;
     this.tokenFromStorage = false;
@@ -234,7 +260,6 @@ export class WsTransport implements Transport {
         // every welcome carries the token to use next time (a reconnect rotates it)
         this.token = msg.token;
         this.tokenFromStorage = false;
-        this.tokens.save(this.opts.roomId, msg.token);
         for (const cb of this.listeners.welcome) cb(msg);
         break;
       case 'snapshot':

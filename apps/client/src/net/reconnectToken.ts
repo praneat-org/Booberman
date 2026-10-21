@@ -23,9 +23,10 @@ function defaultStorage(): TokenStorage | undefined {
 }
 
 /**
- * One slot in `sessionStorage`: the latest token and the room it belongs to. It outlives a page reload
- * (the server holds the slot for 15 s) but not the tab, and is never shared between tabs. Nothing here
- * throws: without storage, a reload is just a fresh join.
+ * One slot in `sessionStorage`: a token and the room it belongs to. It outlives a page reload (the server
+ * holds the slot for 15 s) but not the tab. A *copy* of a tab (Duplicate tab) gets a copy of this storage,
+ * so the owner must keep it empty while playing: `WsTransport` writes it only on `pagehide` and clears it
+ * when the next page has read it. Nothing here throws: without storage, a reload is just a fresh join.
  */
 export function sessionTokenStore(
   storage: TokenStorage | undefined = defaultStorage(),

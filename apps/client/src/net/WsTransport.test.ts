@@ -228,6 +228,10 @@ describe('WsTransport reconnect token', () => {
   function withTokens(storage: TokenStorage = memory()) {
     const sockets: FakeSocket[] = [];
     const tokens = sessionTokenStore(storage);
+    const hiders = new Set<() => void>();
+    const pagehide = () => {
+      for (const cb of [...hiders]) cb();
+    };
     const t = new WsTransport({
       roomId: 'abc123',
       nickname: 'Mint',
@@ -238,20 +242,73 @@ describe('WsTransport reconnect token', () => {
         return s;
       },
       tokens,
+      onPageHide: (cb) => {
+        hiders.add(cb);
+        return () => void hiders.delete(cb);
+      },
     });
     const last = () => sockets[sockets.length - 1] as FakeSocket;
-    return { t, tokens, sockets, last };
+    return { t, tokens, sockets, last, pagehide, hiders };
   }
 
-  it('a first join carries no token; the welcome saves its token', () => {
-    const { t, last, tokens } = withTokens();
+  it('a first join carries no token; the token of the welcome reaches storage only on pagehide', () => {
+    const { t, last, tokens, pagehide } = withTokens();
     t.connect();
     last().open();
     expect(last().sent).toEqual([
       { v: PROTOCOL_VERSION, t: 'join', room: 'abc123', nickname: 'Mint' },
     ]);
     last().receive(welcome('tok-1'));
+    expect(tokens.load('abc123')).toBeUndefined(); // still playing: a copy of this tab's storage gets nothing
+    pagehide();
     expect(tokens.load('abc123')).toBe('tok-1');
+  });
+
+  it('pagehide saves the newest token, after a reconnect rotated it', () => {
+    const { t, last, tokens, pagehide } = withTokens();
+    t.connect();
+    last().open();
+    last().receive(welcome('tok-1'));
+    last().serverClose(1006, '', false);
+    t.connect();
+    last().open();
+    last().receive(welcome('tok-2'));
+    pagehide();
+    expect(tokens.load('abc123')).toBe('tok-2');
+  });
+
+  it('pagehide before any welcome saves nothing', () => {
+    const { t, tokens, pagehide } = withTokens();
+    t.connect();
+    pagehide();
+    expect(tokens.load('abc123')).toBeUndefined();
+  });
+
+  it('reload: the page that is left saves the token, the next page reads it and takes it out of storage', () => {
+    const storage = memory();
+    const first = withTokens(storage);
+    first.t.connect();
+    first.last().open();
+    first.last().receive(welcome('tok-1'));
+    first.pagehide();
+    const second = withTokens(storage);
+    second.t.connect();
+    second.last().open();
+    expect(second.last().sent[0]).toMatchObject({ t: 'join', token: 'tok-1' });
+    expect(second.tokens.load('abc123')).toBeUndefined();
+  });
+
+  it('Duplicate tab: a copy of the storage of a tab that is still playing holds no token, so it joins as a newcomer', () => {
+    const storage = memory();
+    const original = withTokens(storage);
+    original.t.connect();
+    original.last().open();
+    original.last().receive(welcome('tok-1'));
+    // the browser copies the storage now: nothing to inherit
+    const copy = withTokens(storage);
+    copy.t.connect();
+    copy.last().open();
+    expect(copy.last().sent[0]).not.toHaveProperty('token');
   });
 
   it('after a drop, connect() joins again with the token of the last welcome', () => {
@@ -312,14 +369,17 @@ describe('WsTransport reconnect token', () => {
     expect(errs).toEqual(['INVALID_TOKEN']);
   });
 
-  it('disconnect forgets the token: a new connect joins as a newcomer, and nothing is left in storage', () => {
-    const { t, last, tokens } = withTokens();
+  it('disconnect forgets the token: a new connect joins as a newcomer, and a later pagehide saves nothing', () => {
+    const { t, last, tokens, pagehide, hiders } = withTokens();
     t.connect();
     last().open();
     last().receive(welcome('tok-1'));
     t.disconnect();
+    expect(hiders.size).toBe(0);
+    pagehide();
     expect(tokens.load('abc123')).toBeUndefined();
     t.connect();
+    expect(hiders.size).toBe(1);
     last().open();
     expect(last().sent[0]).not.toHaveProperty('token');
   });
@@ -329,6 +389,11 @@ describe('WsTransport reconnect token', () => {
     t.connect();
     last().open();
     expect(last().sent[0]).toMatchObject({ t: 'join', nickname: 'Mint', token: 'old-tok' });
+  });
+
+  it('the stored token is taken out of storage as soon as the page has read it', () => {
+    const { tokens } = withTokens(memory({ [RECONNECT_STORAGE_KEY]: saved('abc123', 'old-tok') }));
+    expect(tokens.load('abc123')).toBeUndefined();
   });
 
   it('a stored token of another room is ignored', () => {
@@ -341,7 +406,7 @@ describe('WsTransport reconnect token', () => {
   });
 
   it('a stored token the server no longer knows is not a failure: the join is repeated without it', () => {
-    const { t, last, sockets, tokens } = withTokens(
+    const { t, last, sockets, tokens, pagehide } = withTokens(
       memory({ [RECONNECT_STORAGE_KEY]: saved('abc123', 'old-tok') }),
     );
     const errs: unknown[] = [];
@@ -364,6 +429,7 @@ describe('WsTransport reconnect token', () => {
     ]);
     last().receive(welcome('new-tok'));
     expect(welcomes).toEqual(['new-tok']);
+    pagehide();
     expect(tokens.load('abc123')).toBe('new-tok');
   });
 
