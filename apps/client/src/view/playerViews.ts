@@ -9,6 +9,8 @@ export interface PlayerView {
   py: number;
   alive: boolean;
   cursed: boolean;
+  /** Has the kick item (FE-23): shown with a green skate beside the sprite. */
+  kick: boolean;
   isSelf: boolean;
   tint: number;
 }
@@ -32,6 +34,7 @@ export function toPlayerViews(
     py: p.y * TILE_SIZE,
     alive: p.alive,
     cursed: p.curse > 0,
+    kick: p.kick === true,
     isSelf: p.id === selfId,
     tint: PLAYER_TINTS[p.id] ?? 0xffffff,
   }));

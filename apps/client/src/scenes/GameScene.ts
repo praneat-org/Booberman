@@ -19,6 +19,7 @@ import { toCurseFrames } from '../view/curseFrames';
 import { debugEnabled } from '../view/debugStats';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
 import { toRematchView, toWaitingRows } from '../view/endView';
+import { KICK_BADGE_SCALE, KICK_BADGE_TINT, toKickBadges } from '../view/kickBadges';
 import { BOARD_HEIGHT_PX, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
 import { type Drawable, RoundView } from '../view/roundView';
@@ -51,6 +52,7 @@ export class GameScene extends Phaser.Scene {
   private bombSprites = new Map<string, Sprite>();
   private flameSprites = new Map<string, Sprite>();
   private itemSprites = new Map<string, Sprite>();
+  private kickBadgeSprites = new Map<string, Sprite>();
   private marker: Phaser.GameObjects.Image | undefined;
   private curseFrames: CurseFrames | undefined;
   private tracker = new DirectionTracker();
@@ -80,6 +82,7 @@ export class GameScene extends Phaser.Scene {
     this.bombSprites = new Map();
     this.flameSprites = new Map();
     this.itemSprites = new Map();
+    this.kickBadgeSprites = new Map();
     this.round = new RoundView();
     this.tracker = new DirectionTracker();
     this.selfId = undefined;
@@ -211,6 +214,7 @@ export class GameScene extends Phaser.Scene {
     this.drawFlames(d.flames);
     this.drawItems(d.items);
     this.drawPlayers(d.players);
+    this.drawKickBadges(d.players);
     this.curseFrames?.sync(toCurseFrames(d.players, this.round.latest?.tick ?? 0));
     this.drawOverlays();
   }
@@ -281,6 +285,7 @@ export class GameScene extends Phaser.Scene {
       this.bombSprites,
       this.flameSprites,
       this.itemSprites,
+      this.kickBadgeSprites,
       this.players,
     ]) {
       for (const sprite of pool.values()) sprite.destroy();
@@ -338,6 +343,19 @@ export class GameScene extends Phaser.Scene {
     );
     for (const v of views)
       this.itemSprites.get(v.key)?.setFrame(v.frame === 0 ? SheetFrame.curse : SheetFrame.kick);
+  }
+
+  /** FE-23: a small green skate on every player who holds the kick item. */
+  private drawKickBadges(players: Drawable['players']): void {
+    const views = toKickBadges(players);
+    this.sync(this.kickBadgeSprites, views, () =>
+      this.add
+        .sprite(0, 0, AssetKey.Sheet, SheetFrame.kick)
+        .setScale(KICK_BADGE_SCALE)
+        .setTint(KICK_BADGE_TINT)
+        .setDepth(Depth.Player + 0.5),
+    );
+    for (const v of views) this.kickBadgeSprites.get(v.key)?.setPosition(v.cx, v.cy);
   }
 
   private drawPlayers(players: Drawable['players']): void {

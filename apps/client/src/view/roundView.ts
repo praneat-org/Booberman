@@ -3,6 +3,7 @@ import type { SfxName } from '../audio/sfx';
 import { SfxTracker } from '../audio/sfxTracker';
 import type { SnapshotMessage } from '../net/Transport';
 import { BoxField } from './boardView';
+import { BombSlideTween } from './bombSlide';
 import type { EndView, RematchStatus } from './endView';
 import { toBombViews, toFlameViews, toItemViews } from './entityViews';
 import { Roster } from './hudView';
@@ -48,6 +49,9 @@ export class RoundView {
   latest: SnapshotMessage | undefined;
   playerAnims: Map<string, PlayerAnim> = new Map();
   renderTick: number | undefined;
+  /** Where sliding bombs are drawn this frame (FE-23). */
+  readonly bombSlides = new BombSlideTween();
+  private bombDrawn: { x: number; y: number }[] = [];
 
   /**
    * BE-57: the room waits for its first round. The server says so by sending `rematchStatus` with
@@ -73,6 +77,8 @@ export class RoundView {
     this.latest = undefined;
     this.renderTick = undefined;
     this.playerAnims = new Map();
+    this.bombSlides.reset();
+    this.bombDrawn = [];
   }
 
   /** `welcome`: a new connection, so the roster starts empty too (joins are replayed after it). */
@@ -97,6 +103,7 @@ export class RoundView {
     this.latest = { ...sample.base, players: sample.players };
     this.renderTick = sample.renderTick;
     this.playerAnims = this.animTracker.update(sample.players, sample.renderTick);
+    this.bombDrawn = this.bombSlides.update(sample.base.bombs, sample.base.tick, sample.renderTick);
     return this.sfx.observe(this.latest);
   }
 
@@ -110,7 +117,7 @@ export class RoundView {
       if (anim && anim.phase !== 'gone') players.push({ view, anim });
     }
     return {
-      bombs: toBombViews(s.bombs),
+      bombs: toBombViews(s.bombs, this.bombDrawn),
       flames: toFlameViews(s.flames, s.tick),
       items: toItemViews(s.items),
       players,
