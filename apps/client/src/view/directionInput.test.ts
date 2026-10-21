@@ -73,4 +73,26 @@ describe('InputSender (D27)', () => {
     sender.update(tracker.current(), false);
     expect(sent.map((s) => s.dir)).toEqual(['down', 'none']);
   });
+
+  it('resync (a new connection) sends the held direction again, once', () => {
+    const sent: unknown[] = [];
+    const sender = new InputSender((i) => sent.push(i));
+    sender.update('right', false);
+    expect(sender.update('right', false)).toBe(false);
+    sender.resync();
+    expect(sender.update('right', false)).toBe(true);
+    expect(sender.update('right', false)).toBe(false);
+    expect(sent).toEqual([
+      { seq: 1, dir: 'right', bomb: false },
+      { seq: 2, dir: 'right', bomb: false },
+    ]);
+  });
+
+  it('resync with nothing held sends nothing', () => {
+    const sender = new InputSender(() => {
+      throw new Error('should not send');
+    });
+    sender.resync();
+    expect(sender.update('none', false)).toBe(false);
+  });
 });
