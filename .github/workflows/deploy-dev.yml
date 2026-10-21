@@ -42,7 +42,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # builds apps/client first (apps/worker depends on it): wrangler.jsonc serves ../client/dist
+      # BE-58 / FE-16: VITE_ASSETS_BASE_URL is baked into the client so it loads assets from the R2 bucket through
+      # manifest.json (written into dist by the sync step below). Not a secret: same GitHub Environment variable
+      # the verify step uses. Unset = the client falls back to plain names from the Worker.
       - run: pnpm build
+        env:
+          VITE_ASSETS_BASE_URL: ${{ vars.ASSETS_PUBLIC_URL }}
 
       # BE-37 / CAR-3789: content-hashed assets -> R2 (only files the bucket does not have yet), then
       # manifest.json into the client build that `wrangler deploy` serves. Runs BEFORE migrations / deploy:
