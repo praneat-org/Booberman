@@ -26,6 +26,19 @@ export const LOBBY_STYLE = `
 .bb-card p{margin:0}
 .bb-actions{display:flex;flex-direction:column;gap:8px}
 .bb-hint{margin:0;color:#ffd84d;font-size:14px}
+.bb-link{display:flex;align-items:center;justify-content:center;text-decoration:none}
+.bb-tabs{display:flex;gap:8px}
+.bb-tab{flex:1;min-height:48px;padding:8px;font:inherit;font-weight:700;color:#fff;background:#33335c;
+  border:2px solid #4a4a7a;border-radius:6px;cursor:pointer;touch-action:manipulation}
+.bb-tab[aria-selected=true]{color:#1b1b2f;background:#ffd84d;border-color:#ffd84d}
+.bb-tab:focus-visible{outline:3px solid #7fd1ff;outline-offset:2px}
+.bb-rank{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.bb-row{display:grid;grid-template-columns:2em 1fr auto;column-gap:8px;align-items:baseline;padding:8px 12px;
+  background:#262645;border:2px solid #4a4a7a;border-radius:6px}
+.bb-pos{font-weight:700;color:#ffd84d;font-family:monospace}
+.bb-name{overflow-wrap:anywhere}
+.bb-val{font-weight:700;text-align:right}
+.bb-matches{grid-column:2 / 4;color:#9aa0c8;font-size:12px}
 `;
 
 export function el<K extends keyof HTMLElementTagNameMap>(

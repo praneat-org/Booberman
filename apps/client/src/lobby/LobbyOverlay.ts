@@ -47,7 +47,9 @@ export class LobbyOverlay {
     });
     this.input.addEventListener('input', () => controller.setNickname(this.input.value));
 
-    wrap.append(form, el('h2', 'bb-h2', 'ห้องที่เปิดอยู่'), this.roomsBox);
+    const board = el('a', 'bb-btn bb-ghost bb-link', 'อันดับผู้เล่น');
+    board.href = '/leaderboard';
+    wrap.append(form, el('h2', 'bb-h2', 'ห้องที่เปิดอยู่'), this.roomsBox, board);
     this.root.append(this.styleEl, wrap);
     parent.append(this.root);
 

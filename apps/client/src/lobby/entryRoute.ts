@@ -14,6 +14,7 @@ export type EntryRoute =
   | { kind: 'home' }
   | { kind: 'join'; roomId: string; nickname: string }
   | { kind: 'form'; roomId: string; nickname: string }
+  | { kind: 'leaderboard' }
   | { kind: 'not-found' };
 
 /** `/room/<segment>[/]`, or `/room/<segment>/<more>` which can never be a room link. */
@@ -23,6 +24,9 @@ export function resolveEntry(
   loc: { pathname: string; search: string },
   storedNickname: string,
 ): EntryRoute {
+  if (loc.pathname === '/leaderboard' || loc.pathname === '/leaderboard/') {
+    return { kind: 'leaderboard' }; // FE-25
+  }
   const match = ROOM_URL.exec(loc.pathname);
   if (!match) return { kind: 'home' };
   const extra = match[2];

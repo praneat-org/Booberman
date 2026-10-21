@@ -3,6 +3,7 @@ import { type EntryActions, EntryOverlay, type EntryScreen } from '../lobby/Entr
 import { SERVER_REJECTED_NICKNAME_MESSAGE } from '../lobby/entryNotice';
 import { resolveEntry } from '../lobby/entryRoute';
 import { roomPath, roomUrlWithoutNickname } from '../lobby/joinTarget';
+import { LeaderboardOverlay } from '../lobby/LeaderboardOverlay';
 import { LobbyController } from '../lobby/LobbyController';
 import { LobbyOverlay } from '../lobby/LobbyOverlay';
 import { loadNickname } from '../lobby/nicknameStore';
@@ -53,6 +54,17 @@ export class LobbyScene extends Phaser.Scene {
       case 'home':
         this.showHome();
         break;
+      case 'leaderboard': {
+        const overlay = new LeaderboardOverlay(this.parent(), () => window.location.assign('/'));
+        const cleanup = () => {
+          this.events.off(Phaser.Scenes.Events.SHUTDOWN, cleanup);
+          this.events.off(Phaser.Scenes.Events.DESTROY, cleanup);
+          overlay.destroy();
+        };
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, cleanup);
+        this.events.once(Phaser.Scenes.Events.DESTROY, cleanup);
+        break;
+      }
       case 'join':
         this.enterRoom(route.roomId, route.nickname);
         break;
