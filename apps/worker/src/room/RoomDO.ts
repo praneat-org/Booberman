@@ -16,6 +16,8 @@ import {
   toSnapshot,
 } from '../game';
 import { InputQueue } from './inputQueue';
+import { buildMatchRecord } from './matchRecord';
+import { saveMatch } from './matchStore';
 import { RoomKvSync } from './roomKv';
 import { TickStats } from './tickStats';
 
@@ -98,6 +100,12 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
    * `waiting`, so a DO that wakes up does not start a round on its own.
    */
   private waiting = false;
+  /**
+   * BE-42: epoch ms at which the round on the board began (`matches.started_at`); 0 = not known yet.
+   * In memory only, on purpose: after an eviction the round is rebuilt from scratch (`recoverRound`),
+   * so it starts counting again. Never read by `src/game/` (no clock in there).
+   */
+  private roundStartedAt = 0;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -333,6 +341,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     );
     this.seedCache = state.seed;
     this.state = state;
+    this.roundStartedAt = Date.now();
     this.queue.clear();
     this.roundEnd = undefined;
     this.waiting = false;
@@ -447,6 +456,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       return;
     }
     this.state = state;
+    this.roundStartedAt = Date.now();
     this.clearReady(players);
     await this.ctx.storage.deleteAlarm();
     for (const e of events) this.broadcast(e);
@@ -462,6 +472,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (this.loop !== null) clearInterval(this.loop);
     this.loop = null;
     this.state = undefined;
+    this.roundStartedAt = 0;
     this.queue.clear();
     this.forgetEndScreen();
     if (this.waiting) {
@@ -500,11 +511,16 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     }
     const started = performance.now();
     try {
+      // the round on the board starts being played now (first tick of a room / of a round nobody announced)
+      if (this.roundStartedAt === 0 && !this.state?.result) this.roundStartedAt = Date.now();
       const { state, events } = simulate(this.syncPlayers(players), this.queue.drain());
       this.state = state;
       for (const e of events) this.broadcast(e);
       const end = events.find((e): e is RoundEndEvent => e.kind === 'roundEnd');
-      if (end) this.rememberEndScreen(end);
+      if (end) {
+        this.rememberEndScreen(end);
+        this.recordMatch(end, state, players);
+      }
       for (const p of players) send(p.ws, toSnapshot(state, p.playerId));
     } catch (error) {
       console.error(JSON.stringify({ msg: 'tick-failed', error: String(error) }));
@@ -512,6 +528,34 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     // note: workerd's clock only advances on I/O, so on a pure CPU tick this can read 0
     this.stats.record(performance.now() - started);
     if (this.stats.total % STATS_LOG_EVERY_TICKS === 0) this.logStats('tick-stats');
+  }
+
+  /**
+   * BE-42 / D12: stores the finished round in D1 without making anybody wait for it. The write is
+   * handed to `ctx.waitUntil` (in a Durable Object a pending waitUntil promise keeps the object from
+   * being evicted until it settles, so a deploy or idle moment does not drop the write) and is never
+   * awaited: the end screen, the next tick and the rematch do not depend on D1. A failure (D1 down,
+   * slow, batch rejected) is logged and the game goes on; the result is simply lost, as D12 accepts.
+   * Never throws: a bug in building the record must not cost the room its tick.
+   */
+  private recordMatch(end: RoundEndEvent, state: GameState, players: readonly Player[]): void {
+    const startedAt = this.roundStartedAt;
+    this.roundStartedAt = 0; // the next round (startRound) sets it again
+    try {
+      const record = buildMatchRecord(end, {
+        id: crypto.randomUUID(),
+        roomId: this.room,
+        seed: state.seed,
+        startedAt: startedAt === 0 ? Date.now() : startedAt,
+        endedAt: Date.now(),
+        nicknames: new Map(players.map((p) => [p.playerId, p.nickname] as const)),
+      });
+      this.ctx.waitUntil(
+        saveMatch(this.env.DB, record).catch(logFailure('match-save', { match: record.id })),
+      );
+    } catch (error) {
+      logFailure('match-save', { room: this.room })(error);
+    }
   }
 
   /** Game state follows the sockets: new first tick, a late joiner or a leaver all land here. */
@@ -559,8 +603,10 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 /** A new round's seed, picked here and never by a client (`game/` may not use randomness). */
 const randomSeed = (): number => crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
 
-const logFailure = (msg: string) => (error: unknown) =>
-  console.error(JSON.stringify({ msg, error: String(error) }));
+const logFailure =
+  (msg: string, extra: Record<string, string> = {}) =>
+  (error: unknown) =>
+    console.error(JSON.stringify({ msg, ...extra, error: String(error) }));
 
 const sessionsOf = (players: readonly Player[]) =>
   new Map(players.map((p) => [p.playerId, p.session] as const));
