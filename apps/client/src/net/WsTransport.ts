@@ -6,6 +6,7 @@ import {
   type ServerMessage,
 } from '@booberman/protocol';
 import { errorCodeForClose } from './closeCodes';
+import { sessionTokenStore, type TokenStore } from './reconnectToken';
 import type {
   CloseInfo,
   PongMessage,
@@ -36,6 +37,8 @@ export interface WsTransportOptions {
   /** Page location; picks `ws` / `wss` and the host (same origin). Defaults to `window.location`. */
   location?: Pick<Location, 'protocol' | 'host'>;
   createSocket?: (url: string) => SocketLike;
+  /** Where the reconnect token survives a page reload. Defaults to `sessionStorage`. */
+  tokens?: TokenStore;
 }
 
 /** `/ws/room/:id` on the same origin; `wss` when the page is https. */
@@ -60,8 +63,13 @@ type Listeners = {
  * The real server (`/ws/room/:id`). Sends `join` as soon as the socket opens; every incoming
  * frame goes through `parseServerMessage` (bad frames are logged and skipped). `error` messages
  * and the 4001 / 4002 close codes surface through `onError`; any close surfaces through `onClose`.
- * A deliberate `disconnect()` fires nothing. Input is dropped while the socket is not open: the
- * server forgets us when the socket drops (D27), so there is nothing worth queueing.
+ * A deliberate `disconnect()` fires nothing. Input is dropped while the socket is not open: nothing is
+ * queued, the scene sends the held direction again once we are back.
+ *
+ * Reconnecting (BE-44 / FE-22): the token of the latest `welcome` is kept in memory and in
+ * `sessionStorage`, and every `join` sends it, so `connect()` after a drop asks for the old slot back
+ * (the Reconnector decides when to call it). A token left over from an earlier page load that the server
+ * no longer knows is not an error: the join is repeated without it. `disconnect()` forgets the token.
  */
 export class WsTransport implements Transport {
   private readonly listeners: Listeners = {
@@ -75,8 +83,16 @@ export class WsTransport implements Transport {
   private socket: SocketLike | undefined;
   /** An error already reported for this socket, so `error` + close 4001 is one callback. */
   private reported: ErrorCode | undefined;
+  private readonly tokens: TokenStore;
+  private token: string | undefined;
+  /** The token was read from storage (an earlier page load), not issued to this transport: it may be stale. */
+  private tokenFromStorage: boolean;
 
-  constructor(private readonly opts: WsTransportOptions) {}
+  constructor(private readonly opts: WsTransportOptions) {
+    this.tokens = opts.tokens ?? sessionTokenStore();
+    this.token = this.tokens.load(opts.roomId);
+    this.tokenFromStorage = this.token !== undefined;
+  }
 
   connect(): void {
     if (this.socket) return;
@@ -88,7 +104,13 @@ export class WsTransport implements Transport {
     this.socket = socket;
     this.reported = undefined;
     socket.onopen = () => {
-      this.write({ v: PROTOCOL_VERSION, t: 'join', room: roomId, nickname });
+      this.write({
+        v: PROTOCOL_VERSION,
+        t: 'join',
+        room: roomId,
+        nickname,
+        ...(this.token === undefined ? {} : { token: this.token }),
+      });
     };
     socket.onmessage = (ev) => this.receive(ev.data);
     socket.onerror = () => {
@@ -98,6 +120,10 @@ export class WsTransport implements Transport {
       if (this.socket !== socket) return;
       this.detach();
       const mapped = errorCodeForClose(ev.code);
+      if (mapped === 'INVALID_TOKEN' && this.tokenFromStorage) {
+        this.joinWithoutToken();
+        return;
+      }
       if (mapped && this.reported !== mapped) this.emitError(mapped, ev.reason || undefined);
       for (const cb of this.listeners.close) {
         cb({ code: ev.code, reason: ev.reason, clean: ev.wasClean });
@@ -106,6 +132,8 @@ export class WsTransport implements Transport {
   }
 
   disconnect(): void {
+    // leaving for good (or giving up): the slot is not ours any more
+    this.forgetToken();
     const socket = this.socket;
     if (!socket) return;
     this.detach();
@@ -158,6 +186,25 @@ export class WsTransport implements Transport {
     socket.send(JSON.stringify(msg));
   }
 
+  private forgetToken(): void {
+    this.token = undefined;
+    this.tokenFromStorage = false;
+    this.tokens.clear();
+  }
+
+  /** The stored token was refused (too old): drop it and join as a newcomer on a new socket. */
+  private joinWithoutToken(): void {
+    const socket = this.socket;
+    this.detach();
+    try {
+      socket?.close(1000, 'stale reconnect token');
+    } catch {
+      // already closed
+    }
+    this.forgetToken();
+    this.connect();
+  }
+
   private detach(): void {
     const socket = this.socket;
     this.socket = undefined;
@@ -184,6 +231,10 @@ export class WsTransport implements Transport {
   private dispatch(msg: ServerMessage): void {
     switch (msg.t) {
       case 'welcome':
+        // every welcome carries the token to use next time (a reconnect rotates it)
+        this.token = msg.token;
+        this.tokenFromStorage = false;
+        this.tokens.save(this.opts.roomId, msg.token);
         for (const cb of this.listeners.welcome) cb(msg);
         break;
       case 'snapshot':
@@ -196,7 +247,8 @@ export class WsTransport implements Transport {
         for (const cb of this.listeners.pong) cb(msg);
         break;
       case 'error':
-        this.emitError(msg.code, msg.message);
+        if (msg.code === 'INVALID_TOKEN' && this.tokenFromStorage) this.joinWithoutToken();
+        else this.emitError(msg.code, msg.message);
         break;
     }
   }

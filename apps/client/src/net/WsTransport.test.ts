@@ -1,5 +1,6 @@
 import { ClientMessage, exampleServerMessages, PROTOCOL_VERSION } from '@booberman/protocol';
 import { describe, expect, it, vi } from 'vitest';
+import { RECONNECT_STORAGE_KEY, sessionTokenStore, type TokenStorage } from './reconnectToken';
 import { roomSocketUrl, type SocketLike, WsTransport } from './WsTransport';
 
 class FakeSocket implements SocketLike {
@@ -208,5 +209,188 @@ describe('WsTransport', () => {
     off();
     sock().receive(exampleServerMessages.snapshot);
     expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** FE-22: the reconnect token — kept from `welcome`, sent with every `join`, forgotten on `disconnect`. */
+describe('WsTransport reconnect token', () => {
+  function memory(initial: Record<string, string> = {}): TokenStorage {
+    const data = new Map(Object.entries(initial));
+    return {
+      getItem: (k) => data.get(k) ?? null,
+      setItem: (k, v) => void data.set(k, v),
+      removeItem: (k) => void data.delete(k),
+    };
+  }
+  const saved = (room: string, token: string) => JSON.stringify({ room, token });
+  const welcome = (token: string) => ({ ...exampleServerMessages.welcome, token });
+
+  function withTokens(storage: TokenStorage = memory()) {
+    const sockets: FakeSocket[] = [];
+    const tokens = sessionTokenStore(storage);
+    const t = new WsTransport({
+      roomId: 'abc123',
+      nickname: 'Mint',
+      location: { protocol: 'http:', host: 'example.test' },
+      createSocket: (url) => {
+        const s = new FakeSocket(url);
+        sockets.push(s);
+        return s;
+      },
+      tokens,
+    });
+    const last = () => sockets[sockets.length - 1] as FakeSocket;
+    return { t, tokens, sockets, last };
+  }
+
+  it('a first join carries no token; the welcome saves its token', () => {
+    const { t, last, tokens } = withTokens();
+    t.connect();
+    last().open();
+    expect(last().sent).toEqual([
+      { v: PROTOCOL_VERSION, t: 'join', room: 'abc123', nickname: 'Mint' },
+    ]);
+    last().receive(welcome('tok-1'));
+    expect(tokens.load('abc123')).toBe('tok-1');
+  });
+
+  it('after a drop, connect() joins again with the token of the last welcome', () => {
+    const { t, last, sockets } = withTokens();
+    t.connect();
+    last().open();
+    last().receive(welcome('tok-1'));
+    last().serverClose(1006, '', false);
+    t.connect();
+    expect(sockets).toHaveLength(2);
+    last().open();
+    expect(last().sent).toEqual([
+      { v: PROTOCOL_VERSION, t: 'join', room: 'abc123', nickname: 'Mint', token: 'tok-1' },
+    ]);
+  });
+
+  it('every welcome rotates the token: the next join uses the newest', () => {
+    const { t, last } = withTokens();
+    t.connect();
+    last().open();
+    last().receive(welcome('tok-1'));
+    last().serverClose(1006, '', false);
+    t.connect();
+    last().open();
+    last().receive(welcome('tok-2'));
+    last().serverClose(1006, '', false);
+    t.connect();
+    last().open();
+    expect(last().sent[0]).toMatchObject({ t: 'join', token: 'tok-2' });
+  });
+
+  it('a join that answers INVALID_TOKEN is reported (a reconnect that was too late)', () => {
+    const { t, last } = withTokens();
+    const errs: unknown[] = [];
+    t.onError((c) => errs.push(c));
+    t.connect();
+    last().open();
+    last().receive(welcome('tok-1'));
+    last().serverClose(1006, '', false);
+    t.connect();
+    last().open();
+    last().receive({ v: PROTOCOL_VERSION, t: 'error', code: 'INVALID_TOKEN' });
+    last().serverClose(4003, 'INVALID_TOKEN');
+    expect(errs).toEqual(['INVALID_TOKEN']);
+  });
+
+  it('a close 4003 without the error message still reports INVALID_TOKEN', () => {
+    const { t, last } = withTokens();
+    const errs: unknown[] = [];
+    t.onError((c) => errs.push(c));
+    t.connect();
+    last().open();
+    last().receive(welcome('tok-1'));
+    last().serverClose(1006, '', false);
+    t.connect();
+    last().open();
+    last().serverClose(4003);
+    expect(errs).toEqual(['INVALID_TOKEN']);
+  });
+
+  it('disconnect forgets the token: a new connect joins as a newcomer, and nothing is left in storage', () => {
+    const { t, last, tokens } = withTokens();
+    t.connect();
+    last().open();
+    last().receive(welcome('tok-1'));
+    t.disconnect();
+    expect(tokens.load('abc123')).toBeUndefined();
+    t.connect();
+    last().open();
+    expect(last().sent[0]).not.toHaveProperty('token');
+  });
+
+  it('a reload: a token saved by the earlier page for this room is sent on the first join', () => {
+    const { t, last } = withTokens(memory({ [RECONNECT_STORAGE_KEY]: saved('abc123', 'old-tok') }));
+    t.connect();
+    last().open();
+    expect(last().sent[0]).toMatchObject({ t: 'join', nickname: 'Mint', token: 'old-tok' });
+  });
+
+  it('a stored token of another room is ignored', () => {
+    const { t, last } = withTokens(
+      memory({ [RECONNECT_STORAGE_KEY]: saved('other99', 'old-tok') }),
+    );
+    t.connect();
+    last().open();
+    expect(last().sent[0]).not.toHaveProperty('token');
+  });
+
+  it('a stored token the server no longer knows is not a failure: the join is repeated without it', () => {
+    const { t, last, sockets, tokens } = withTokens(
+      memory({ [RECONNECT_STORAGE_KEY]: saved('abc123', 'old-tok') }),
+    );
+    const errs: unknown[] = [];
+    const closes: unknown[] = [];
+    const welcomes: unknown[] = [];
+    t.onError((c) => errs.push(c));
+    t.onClose((i) => closes.push(i));
+    t.onWelcome((m) => welcomes.push(m.token));
+    t.connect();
+    const first = last();
+    first.open();
+    first.receive({ v: PROTOCOL_VERSION, t: 'error', code: 'INVALID_TOKEN' });
+    first.serverClose(4003, 'INVALID_TOKEN'); // arrives after we moved on: ignored
+    expect(errs).toEqual([]);
+    expect(closes).toEqual([]);
+    expect(sockets).toHaveLength(2);
+    last().open();
+    expect(last().sent).toEqual([
+      { v: PROTOCOL_VERSION, t: 'join', room: 'abc123', nickname: 'Mint' },
+    ]);
+    last().receive(welcome('new-tok'));
+    expect(welcomes).toEqual(['new-tok']);
+    expect(tokens.load('abc123')).toBe('new-tok');
+  });
+
+  it('the same fallback when only the close 4003 arrives', () => {
+    const { t, last, sockets } = withTokens(
+      memory({ [RECONNECT_STORAGE_KEY]: saved('abc123', 'old-tok') }),
+    );
+    const errs: unknown[] = [];
+    t.onError((c) => errs.push(c));
+    t.connect();
+    last().open();
+    last().serverClose(4003, 'INVALID_TOKEN');
+    expect(errs).toEqual([]);
+    expect(sockets).toHaveLength(2);
+    last().open();
+    expect(last().sent[0]).not.toHaveProperty('token');
+  });
+
+  it('the fallback happens once: after it, INVALID_TOKEN is an error again', () => {
+    const { t, last } = withTokens(memory({ [RECONNECT_STORAGE_KEY]: saved('abc123', 'old-tok') }));
+    const errs: unknown[] = [];
+    t.onError((c) => errs.push(c));
+    t.connect();
+    last().open();
+    last().receive({ v: PROTOCOL_VERSION, t: 'error', code: 'INVALID_TOKEN' });
+    last().open();
+    last().receive({ v: PROTOCOL_VERSION, t: 'error', code: 'INVALID_TOKEN' });
+    expect(errs).toEqual(['INVALID_TOKEN']);
   });
 });
