@@ -26,3 +26,7 @@ export const LeaderboardResponse = z.object({
   entries: z.array(LeaderboardEntry).max(LEADERBOARD_LIMIT),
 });
 export type LeaderboardResponse = z.infer<typeof LeaderboardResponse>;
+
+/** `{ error }` codes of `GET /api/leaderboard` (HTTP API, separate from the WebSocket `ErrorCode`). */
+export const LeaderboardApiErrorCode = z.enum(['BAD_BY']);
+export type LeaderboardApiErrorCode = z.infer<typeof LeaderboardApiErrorCode>;
