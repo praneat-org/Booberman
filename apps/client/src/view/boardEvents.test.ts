@@ -299,6 +299,20 @@ describe('kill feed, end screen and rematch (FE-21)', () => {
     expect(round.roster.nameOf('p2')).toBe('Bob');
   });
 
+  it('BE-57: rematchStatus with no roundEnd before it = the waiting room; roundStart ends it', () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p1' }, round, 'มิ้นท์');
+    expect(round.waiting).toBe(false);
+    applyBoardEvent({ ...exampleServerMessages.rematchStatus, ready: [], deadline: 0 }, round);
+    expect(round.waiting).toBe(true);
+    applyBoardEvent(exampleServerMessages.roundStart, round);
+    expect(round.waiting).toBe(false);
+    // the end screen is not the waiting room
+    applyBoardEvent(exampleServerMessages.roundEndWin, round);
+    applyBoardEvent(exampleServerMessages.rematchStatus, round);
+    expect(round.waiting).toBe(false);
+  });
+
   it('welcome (a new connection) clears them too, and forgets who we were until it says who we are', () => {
     const round = room();
     applyBoardEvent(exampleServerMessages.killBomb, round, 0);

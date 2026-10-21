@@ -9,6 +9,8 @@ import {
   rematchStatusText,
   toEndView,
   toRematchView,
+  toWaitingRows,
+  waitingStatusText,
 } from './endView';
 import { Roster } from './hudView';
 
@@ -19,6 +21,25 @@ const roster = () => {
   r.join('p3', 'Cat');
   return r;
 };
+
+describe('waiting room (BE-57)', () => {
+  it('lists everyone in the room by id, with who is ready and who we are', () => {
+    const rows = toWaitingRows({ ready: ['p2'], deadline: 0 }, roster(), 'p1');
+    expect(rows.map((r) => [r.id, r.name, r.isSelf, r.ready])).toEqual([
+      ['p1', 'มิ้นท์', true, false],
+      ['p2', 'Bob', false, true],
+      ['p3', 'Cat', false, false],
+    ]);
+  });
+
+  it('asks for a friend while alone, then counts who is ready', () => {
+    const alone = new Roster();
+    alone.join('p1', 'มิ้นท์');
+    expect(waitingStatusText(toRematchView(undefined, alone, 'p1', 0))).toContain('อย่างน้อย 2 คน');
+    const v = toRematchView({ ready: ['p1'], deadline: 0 }, roster(), 'p1', 0);
+    expect(waitingStatusText(v)).toBe('พร้อมแล้ว 1/3 · เริ่มเมื่อทุกคนกดพร้อม');
+  });
+});
 
 describe('toEndView', () => {
   it('keeps the server order of the rows: rank is the position, nothing is re-sorted', () => {

@@ -11,7 +11,7 @@ import {
   type RoomDO,
 } from '../src/room/RoomDO';
 import { RECONNECT_HOLD_MS } from '../src/room/reconnect';
-import { type Client, connect, isEvent, join, v } from './helpers';
+import { begin, type Client, connect, isEvent, join, v } from './helpers';
 
 // BE-44 / CAR-3800 AC 1-4: a dropped player keeps the slot and the state for 15 s, on a token.
 // A real drop reaches RoomDO as webSocketClose(1006); the test calls it the same way. Time is the
@@ -37,6 +37,21 @@ async function enter(room: string, nickname: string) {
   const c = await join(room, nickname);
   const welcome = await c.next(isWelcome);
   return { c, welcome };
+}
+type Entry = Awaited<ReturnType<typeof enter>>;
+
+/**
+ * Joins everybody, then starts the round (BE-57: a new room waits for everyone to be ready), so the
+ * game is on when the test begins. Whoever joins later with `enter` is a late joiner.
+ */
+async function start<N extends string[]>(
+  room: string,
+  ...names: N
+): Promise<{ [K in keyof N]: Entry }> {
+  const entries: Entry[] = [];
+  for (const n of names) entries.push(await enter(room, n));
+  await begin(room, ...entries.map((e) => e.c));
+  return entries as { [K in keyof N]: Entry };
 }
 
 /** The connection of `playerId` is lost: what Cloudflare tells RoomDO when the network goes (code 1006). */
@@ -82,8 +97,7 @@ const later = (ms: number) => vi.setSystemTime(Date.now() + ms);
 
 describe('the token in welcome', () => {
   it('every welcome carries a random token, a different one per player', async () => {
-    const a = await enter('tok1', 'A');
-    const b = await enter('tok1', 'B');
+    const [a, b] = await start('tok1', 'A', 'B');
     expect(a.welcome.token).toMatch(/^[0-9a-f]{32}$/);
     expect(b.welcome.token).toMatch(/^[0-9a-f]{32}$/);
     expect(a.welcome.token).not.toBe(b.welcome.token);
@@ -92,8 +106,7 @@ describe('the token in welcome', () => {
   });
 
   it('the token never reaches another player', async () => {
-    const a = await enter('tok2', 'A');
-    const b = await enter('tok2', 'B');
+    const [a, b] = await start('tok2', 'A', 'B');
     await a.c.next((m) => m.t === 'snapshot' && m.players.length === 2);
     const seenByA = JSON.stringify(a.c.received.filter((m) => m.t !== 'welcome'));
     expect(seenByA).not.toContain(b.welcome.token);
@@ -104,8 +117,7 @@ describe('the token in welcome', () => {
 
 describe('AC: dropped for 5 s, back with the token -> the same slot and state', () => {
   it('same playerId, same character, a new token, and nobody else saw a thing', async () => {
-    const a = await enter('back1', 'A');
-    const b = await enter('back1', 'B');
+    const [a, b] = await start('back1', 'A', 'B');
     await a.c.next((m) => m.t === 'snapshot' && m.players.length === 2);
     expect(b.welcome.playerId).toBe('p2');
     const before = (await gameOf('back1'))?.players.find((p) => p.id === 'p2');
@@ -139,8 +151,7 @@ describe('AC: dropped for 5 s, back with the token -> the same slot and state', 
   });
 
   it('a second drop works with the new token, and the old one is spent', async () => {
-    const a = await enter('back2', 'A');
-    const b = await enter('back2', 'B');
+    const [a, b] = await start('back2', 'A', 'B');
     await drop('back2', 'p2');
     const b2 = await comeBack('back2', b.welcome.token);
     const second = await b2.next(isWelcome);
@@ -155,9 +166,29 @@ describe('AC: dropped for 5 s, back with the token -> the same slot and state', 
     for (const c of [a.c, b3]) c.close();
   });
 
+  it('input works after the reconnect even when the client counts from 1 again', async () => {
+    const [a, b] = await start('seq1', 'A', 'B');
+    b.c.send({ v, t: 'input', seq: 50, dir: 'none', bomb: false });
+    await b.c.next((m) => m.t === 'snapshot' && m.ackSeq === 50);
+    await drop('seq1', 'p2');
+    const b2 = await comeBack('seq1', b.welcome.token);
+    await b2.next(isWelcome);
+    // a new InputSender starts at 1, far below the 50 the server saw before the drop
+    b2.send({ v, t: 'input', seq: 1, dir: 'none', bomb: false });
+    await sleep(150);
+    expect(
+      await runInDurableObject(stubFor('seq1'), (r: RoomDO) => r.tickStats().inputs),
+    ).toMatchObject({
+      stale: 0,
+    });
+    const p2 = (await gameOf('seq1'))?.players.find((p) => p.id === 'p2');
+    expect(p2?.ackSeq).toBeGreaterThanOrEqual(50); // ackSeq never goes back (Math.max in simulate)
+    a.c.close();
+    b2.close();
+  });
+
   it('a client that noticed the drop first takes over from the socket the server still thinks is alive', async () => {
-    const a = await enter('back3', 'A');
-    const b = await enter('back3', 'B');
+    const [a, b] = await start('back3', 'A', 'B');
     const b2 = await comeBack('back3', b.welcome.token); // B's old socket was never reported closed
     expect((await b2.next(isWelcome)).playerId).toBe('p2');
     await b.c.next(() => b.c.closed !== undefined, 50).catch(() => undefined);
@@ -172,8 +203,7 @@ describe('AC: dropped for 5 s, back with the token -> the same slot and state', 
 
 describe('AC: while dropped the character stays but takes no input', () => {
   it('it stays in the game, stands still, and the room keeps ticking for it', async () => {
-    const a = await enter('away1', 'A');
-    const b = await enter('away1', 'B');
+    const [a, b] = await start('away1', 'A', 'B');
     await a.c.next((m) => m.t === 'snapshot' && m.players.length === 2);
     b.c.send({ v, t: 'input', seq: 3, dir: 'left', bomb: false });
     await b.c.next((m) => m.t === 'snapshot' && m.ackSeq === 3);
@@ -197,7 +227,7 @@ describe('AC: while dropped the character stays but takes no input', () => {
   });
 
   it('when everybody has dropped the room keeps its state and its loop for the 15 s', async () => {
-    const a = await enter('away2', 'A');
+    const [a] = await start('away2', 'A');
     await a.c.next((m) => m.t === 'snapshot');
     await drop('away2', 'p1');
     expect(await ticking('away2')).toBe(true);
@@ -211,12 +241,7 @@ describe('AC: while dropped the character stays but takes no input', () => {
   });
 
   it('the slot is taken: a newcomer gets the next one, and a full room says ROOM_FULL', async () => {
-    const [a, b, c, d] = [
-      await enter('full1', 'A'),
-      await enter('full1', 'B'),
-      await enter('full1', 'C'),
-      await enter('full1', 'D'),
-    ];
+    const [a, b, c, d] = await start('full1', 'A', 'B', 'C', 'D');
     await drop('full1', 'p4');
     const e = await connect('full1');
     e.send({ v, t: 'join', room: 'full1', nickname: 'E' });
@@ -228,8 +253,7 @@ describe('AC: while dropped the character stays but takes no input', () => {
   });
 
   it('a dropped player does not give their id to a newcomer while 3 are connected', async () => {
-    const a = await enter('slot1', 'A');
-    const b = await enter('slot1', 'B');
+    const [a, b] = await start('slot1', 'A', 'B');
     await drop('slot1', 'p1');
     const c = await enter('slot1', 'C');
     expect(c.welcome.playerId).toBe('p3'); // p1 is held, p2 is B
@@ -246,8 +270,7 @@ const isPlayer = (id: string) => (m: ServerMessage) =>
 
 describe('AC: past 15 s the player has left; a wrong token is refused', () => {
   it('dropped for 16 s: the slot is gone, the others are told, and the token is dead', async () => {
-    const a = await enter('late1', 'A');
-    const b = await enter('late1', 'B');
+    const [a, b] = await start('late1', 'A', 'B');
     await a.c.next((m) => m.t === 'snapshot' && m.players.length === 2);
     await drop('late1', 'p2');
     expect(await alarmOf('late1')).not.toBeNull(); // the hold is on the alarm, not in memory
@@ -270,8 +293,7 @@ describe('AC: past 15 s the player has left; a wrong token is refused', () => {
   });
 
   it('a token is not honoured past 15 s even if the alarm is late', async () => {
-    const a = await enter('late2', 'A');
-    const b = await enter('late2', 'B');
+    const [a, b] = await start('late2', 'A', 'B');
     await drop('late2', 'p2');
     later(RECONNECT_HOLD_MS + 1_000); // the alarm has not run
     const b2 = await comeBack('late2', b.welcome.token);
@@ -282,8 +304,7 @@ describe('AC: past 15 s the player has left; a wrong token is refused', () => {
   });
 
   it('exactly at the deadline the slot is gone, one millisecond before it is not', async () => {
-    const a = await enter('edge1', 'A');
-    const b = await enter('edge1', 'B');
+    const [a, b] = await start('edge1', 'A', 'B');
     await drop('edge1', 'p2');
     later(RECONNECT_HOLD_MS - 1);
     const ok = await comeBack('edge1', b.welcome.token);
@@ -292,8 +313,7 @@ describe('AC: past 15 s the player has left; a wrong token is refused', () => {
   });
 
   it('a wrong token is refused with INVALID_TOKEN and the held slot is untouched', async () => {
-    const a = await enter('wrong1', 'A');
-    const b = await enter('wrong1', 'B');
+    const [a, b] = await start('wrong1', 'A', 'B');
     await drop('wrong1', 'p2');
     for (const token of ['nope', '0'.repeat(32), a.welcome.token.slice(0, 31)]) {
       const bad = await comeBack('wrong1', token);
@@ -318,8 +338,7 @@ describe('AC: past 15 s the player has left; a wrong token is refused', () => {
   });
 
   it('leaving on purpose (close 1000) gives the slot up at once: no hold, the token is dead', async () => {
-    const a = await enter('bye1', 'A');
-    const b = await enter('bye1', 'B');
+    const [a, b] = await start('bye1', 'A', 'B');
     b.c.close();
     expect(await a.c.next(isEvent('playerLeft'))).toMatchObject({ playerId: 'p2' });
     expect(await heldIds('bye1')).toEqual([]);
@@ -330,7 +349,7 @@ describe('AC: past 15 s the player has left; a wrong token is refused', () => {
   });
 
   it('the last player gone for good: the loop stops and no alarm is left', async () => {
-    const a = await enter('empty1', 'A');
+    const [a] = await start('empty1', 'A');
     await a.c.next((m) => m.t === 'snapshot');
     await drop('empty1', 'p1');
     later(RECONNECT_HOLD_MS + 1_000);
@@ -343,9 +362,8 @@ describe('AC: past 15 s the player has left; a wrong token is refused', () => {
 
 describe('the one DO alarm serves the hold and the rematch countdown', () => {
   it('a hold that runs out does not start the rematch early; the countdown still does at its time', async () => {
-    const a = await enter('share1', 'A');
-    const b = await enter('share1', 'B');
-    const c = await enter('share1', 'C'); // stays connected and never presses: the countdown has to run
+    // C stays connected and never presses: the countdown has to run
+    const [a, b, c] = await start('share1', 'A', 'B', 'C');
     await a.c.next((m) => m.t === 'snapshot' && m.players.length === 3);
     await editState('share1', () => ({ tick: 2999 }));
     await a.c.next(roundEnd);
@@ -375,9 +393,39 @@ describe('the one DO alarm serves the hold and the rematch countdown', () => {
     c.c.close();
   });
 
+  it('an alarm delivered twice never starts a rematch nobody asked for (at-least-once delivery)', async () => {
+    const [a, b] = await start('share4', 'A', 'B');
+    await editState('share4', () => ({ tick: 2999 }));
+    await a.c.next(roundEnd); // the end screen is up and nobody has pressed: no countdown
+    await drop('share4', 'p2');
+    later(RECONNECT_HOLD_MS + 1_000);
+    expect(await runDurableObjectAlarm(stubFor('share4'))).toBe(true); // the hold runs out
+    expect(await a.c.next(isEvent('playerLeft'))).toMatchObject({ playerId: 'p2' });
+    // the runtime may deliver the same alarm again: the second one finds nothing to expire
+    await runInDurableObject(stubFor('share4'), (r: RoomDO) => r.alarm());
+    await sleep(100);
+    expect(a.c.received.filter(roundStart)).toHaveLength(0);
+    a.c.close();
+    b.c.close();
+  });
+
+  it('an alarm that comes before the countdown is over does not start the rematch', async () => {
+    const [a, b, c] = await start('share5', 'A', 'B', 'C');
+    await editState('share5', () => ({ tick: 2999 }));
+    await a.c.next(roundEnd);
+    a.c.send({ v, t: 'rematch' }); // B and C have not pressed: a 15 s countdown starts
+    await a.c.next((m) => m.t === 'event' && m.kind === 'rematchStatus');
+    await runInDurableObject(stubFor('share5'), (r: RoomDO) => r.alarm()); // too early
+    await sleep(100);
+    expect(a.c.received.filter(roundStart)).toHaveLength(0);
+    later(REMATCH_WINDOW_MS);
+    await runInDurableObject(stubFor('share5'), (r: RoomDO) => r.alarm());
+    await a.c.next(roundStart);
+    for (const x of [a, b, c]) x.c.close();
+  });
+
   it('every connected player ready starts the rematch without waiting for a dropped one', async () => {
-    const a = await enter('share3', 'A');
-    const b = await enter('share3', 'B');
+    const [a, b] = await start('share3', 'A', 'B');
     await a.c.next((m) => m.t === 'snapshot' && m.players.length === 2);
     await editState('share3', () => ({ tick: 2999 }));
     await a.c.next(roundEnd);
@@ -393,8 +441,7 @@ describe('the one DO alarm serves the hold and the rematch countdown', () => {
   });
 
   it('the rematch countdown survives on its own: stored, not read back from the alarm', async () => {
-    const a = await enter('share2', 'A');
-    const b = await enter('share2', 'B');
+    const [a, b] = await start('share2', 'A', 'B');
     await a.c.next((m) => m.t === 'snapshot' && m.players.length === 2);
     await editState('share2', () => ({ tick: 2999 }));
     await a.c.next(roundEnd);
@@ -411,8 +458,7 @@ describe('the one DO alarm serves the hold and the rematch countdown', () => {
 
 describe('a dropped player survives a restart of the DO', () => {
   it('the hold is in storage: after an eviction the token still works inside the 15 s', async () => {
-    const a = await enter('wake1', 'A');
-    const b = await enter('wake1', 'B');
+    const [a, b] = await start('wake1', 'A', 'B');
     await a.c.next((m) => m.t === 'snapshot' && m.players.length === 2);
     await drop('wake1', 'p2');
     // stop the tick timer by hand and evict, like a deploy (see guards.test.ts)
@@ -433,7 +479,7 @@ describe('a dropped player survives a restart of the DO', () => {
   });
 
   it('a room whose only player is dropped is rebuilt from storage and still expires', async () => {
-    const a = await enter('wake2', 'A');
+    const [a] = await start('wake2', 'A');
     await a.c.next((m) => m.t === 'snapshot');
     await drop('wake2', 'p1');
     await runInDurableObject(stubFor('wake2'), (r: RoomDO) => {

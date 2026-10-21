@@ -72,6 +72,8 @@ export const TICK_MS = 50;
 export const STATS_LOG_EVERY_TICKS = 100;
 /** D9: the next round starts this long after the first "play again" press, ready or not. */
 export const REMATCH_WINDOW_MS = 15_000;
+/** BE-57: the first round of a room waits for this many players, all ready. */
+export const MIN_PLAYERS_TO_START = 2;
 
 /**
  * One Durable Object = one room (`idFromName(roomId)`).
@@ -111,6 +113,13 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   /** True while a rematch is being set up (an await in the middle): a second trigger does nothing. */
   private restarting = false;
   /**
+   * BE-57: no round has started since the room got its first player. The loop runs (KV heartbeat)
+   * but the game does not: no snapshots, inputs dropped. `rematch` doubles as "ready"; the first
+   * round starts once at least two players are in and all of them are ready. Also stored under
+   * `waiting`, so a DO that wakes up does not start a round on its own.
+   */
+  private waiting = false;
+  /**
    * BE-42: epoch ms at which the round on the board began (`matches.started_at`); 0 = not known yet.
    * In memory only, on purpose: after an eviction the round is rebuilt from scratch (`recoverRound`),
    * so it starts counting again. Never read by `src/game/` (no clock in there).
@@ -129,7 +138,8 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       if (!room) return;
       this.room = room;
       this.seedCache = await this.seed();
-      await this.recoverRound();
+      this.waiting = (await ctx.storage.get<boolean>('waiting')) === true;
+      if (!this.waiting) await this.recoverRound();
       this.startLoop();
     });
   }
@@ -207,9 +217,10 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
    * 15 s hold (BE-44) and the rematch deadline (D9 / BE-41). Safe to deliver twice or after the round restarted.
    */
   override async alarm(): Promise<void> {
-    const expired = await this.expireHeld(Date.now());
-    // woken for a hold that ran out, the rematch only starts if its own deadline has come too
-    if (expired > 0 && (this.rematchDeadline === 0 || Date.now() < this.rematchDeadline)) return;
+    await this.expireHeld(Date.now());
+    // the rematch starts only when its own deadline has come, whatever woke the alarm: a hold's alarm
+    // delivered twice, or one that is early for the countdown, must not start a round nobody asked for
+    if (this.rematchDeadline === 0 || Date.now() < this.rematchDeadline) return;
     if (!this.state?.result || this.players().length === 0) return;
     await this.startRematch();
   }
@@ -257,6 +268,10 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 
     // decided now, before the first await: a tick in between would already count the newcomer
     const startOver = this.unplayed();
+    if (!this.state && !this.waiting) {
+      this.waiting = true;
+      void this.ctx.storage.put('waiting', true).catch(logFailure('waiting-save'));
+    }
     // one id per join (D33), taken synchronously so two joins can never share it
     const session = this.nextSession++;
     void this.ctx.storage.put('nextSession', this.nextSession);
@@ -281,6 +296,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     }
     this.broadcast({ v, t: 'event', kind: 'playerJoined', playerId, nickname }, ws);
     if (startOver) await this.startRound(randomSeed());
+    else if (this.waiting) send(ws, this.rematchStatus());
     else this.replayEndScreen(ws);
     this.startLoop();
   }
@@ -333,7 +349,8 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       if (p.playerId === playerId) continue;
       send(ws, { v, t: 'event', kind: 'playerJoined', playerId: p.playerId, nickname: p.nickname });
     }
-    this.replayEndScreen(ws);
+    if (this.waiting) send(ws, this.rematchStatus());
+    else this.replayEndScreen(ws);
     this.startLoop();
   }
 
@@ -482,6 +499,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     await this.ctx.storage.transaction(async (txn) => {
       await txn.put('seed', seed);
       await txn.delete('roundEnd');
+      await txn.delete('waiting');
     });
     this.setRematchDeadline(0);
     await this.rearmAlarm();
@@ -499,21 +517,24 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     this.roundStartedAt = Date.now();
     this.queue.clear();
     this.roundEnd = undefined;
+    this.waiting = false;
     this.clearReady(players);
     for (const e of events) this.broadcast(e);
   }
 
   // ── rematch (D9) ──────────────────────────────────────────────────────────
   // Who can start a round: nobody directly. A client can only say `rematch` (ready), and only
-  // while the end screen is up; the round starts when every player in the room is ready, or when
-  // the alarm fires REMATCH_WINDOW_MS after the first press. The seed is always picked here.
+  // while the end screen is up or the room is waiting (BE-57); the round starts when every player
+  // in the room is ready, or when the alarm fires REMATCH_WINDOW_MS after the first press (end
+  // screen only: a waiting room has no countdown). The seed is always picked here.
 
   private async rematch(ws: WebSocket): Promise<void> {
     const a = attachmentOf(ws);
-    if (!a.joined || !this.state?.result) return; // no end screen: a stale or early press, ignore
+    if (!a.joined || !this.canStart()) return; // no end screen / waiting room: a stale or early press, ignore
     if (a.ready) return send(ws, this.rematchStatus()); // pressed already: repeat the status, change nothing
     ws.serializeAttachment({ ...a, ready: true } satisfies Attachment);
     if (this.everyoneReady()) return this.startRematch();
+    if (this.waiting) return this.broadcast(this.rematchStatus());
     if (this.rematchDeadline === 0) {
       this.setRematchDeadline(Date.now() + REMATCH_WINDOW_MS);
       await this.rearmAlarm();
@@ -523,7 +544,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 
   /** Starts the next round of a finished one. Idempotent: a second call while one runs, or after it ran, does nothing. */
   private async startRematch(): Promise<void> {
-    if (this.restarting || !this.state?.result) return;
+    if (this.restarting || !this.canStart()) return;
     this.restarting = true;
     try {
       await this.startRound(randomSeed());
@@ -534,9 +555,13 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 
   /** Someone left during the end screen: their press is gone, so re-check who is ready. */
   private async rematchAfterLeave(): Promise<void> {
-    if (this.rematchDeadline === 0 || !this.state?.result) return; // nobody had pressed
     const players = this.players();
     if (players.length === 0) return; // empty room: `stopLoop` already dropped the countdown
+    if (this.waiting) {
+      if (this.everyoneReady()) return this.startRematch();
+      return this.broadcast(this.rematchStatus());
+    }
+    if (this.rematchDeadline === 0 || !this.state?.result) return; // nobody had pressed
     const ready = players.filter((p) => p.ready).length;
     if (ready === players.length) return this.startRematch();
     if (ready === 0) {
@@ -561,7 +586,14 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
 
   private everyoneReady(): boolean {
     const players = this.players();
-    return players.length > 0 && players.every((p) => p.ready);
+    // BE-57: the first round needs an opponent; a rematch may go on with whoever is left
+    const min = this.waiting ? MIN_PLAYERS_TO_START : 1;
+    return players.length >= min && players.every((p) => p.ready);
+  }
+
+  /** A press of "ready" counts: the end screen is up, or the room waits for its first round. */
+  private canStart(): boolean {
+    return this.waiting || this.state?.result !== undefined;
   }
 
   private clearReady(players: readonly Player[]): void {
@@ -617,6 +649,10 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     this.roundStartedAt = 0;
     this.queue.clear();
     this.forgetEndScreen();
+    if (this.waiting) {
+      this.waiting = false;
+      void this.ctx.storage.delete('waiting').catch(logFailure('waiting-delete'));
+    }
     if (this.stats.total > 0) this.logStats('tick-stats-final');
     this.stats.reset();
   }
@@ -645,6 +681,10 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       return;
     }
     this.kvSync()?.heartbeat(seats.length);
+    if (this.waiting) {
+      this.queue.drain(); // nothing moves before the first round
+      return;
+    }
     const started = performance.now();
     try {
       // the round on the board starts being played now (first tick of a room / of a round nobody announced)
