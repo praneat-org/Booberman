@@ -1,6 +1,6 @@
-// BE-37 / CAR-3789: hash assets/, upload what the bucket does not have, write manifest.json.
+// BE-37 / CAR-3789: hash the game files in apps/client/public, upload what the bucket does not have, write manifest.json.
 //
-//   node scripts/upload-assets.ts sync   --bucket <name> [--src apps/client/assets]
+//   node scripts/upload-assets.ts sync   --bucket <name> [--src apps/client/public]
 //                                        [--out apps/client/dist/manifest.json] [--dry-run]
 //   node scripts/upload-assets.ts verify --manifest <file> --base-url <https://...> --origin <https://...>
 //
@@ -21,7 +21,7 @@ const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
     bucket: { type: 'string' },
-    src: { type: 'string', default: resolve(root, 'apps/client/assets') },
+    src: { type: 'string', default: resolve(root, 'apps/client/public') },
     out: { type: 'string', default: resolve(root, 'apps/client/dist/manifest.json') },
     'dry-run': { type: 'boolean', default: false },
     local: { type: 'boolean', default: false },
@@ -45,6 +45,8 @@ async function sync(): Promise<void> {
   const { files, skipped } = await scanAssets(resolve(values.src));
   for (const s of skipped) log(`ignored  ${s} (extension not in the upload allow-list)`);
   log(`found ${files.length} asset(s) in ${values.src}`);
+  // an empty manifest makes verify a no-op and the deploy looks green while nothing reached R2
+  if (files.length === 0) throw new Error(`no assets found in ${values.src}: wrong --src?`);
 
   const client = createWranglerR2Client({
     wranglerBin: values.wrangler,

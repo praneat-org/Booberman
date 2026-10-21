@@ -1,29 +1,29 @@
 # scripts: asset upload (BE-37 / CAR-3789)
 
-CI hashes the files in `apps/client/assets/`, uploads the ones the R2 bucket does not have yet, and writes
+CI hashes the game files in `apps/client/public/` (the same paths the client loads), uploads the ones the R2 bucket does not have yet, and writes
 `manifest.json` into the client build (`apps/client/dist/manifest.json`, served by the Worker's static assets).
 
 ## manifest.json (the contract for FE-16 / BootScene)
 
-Flat JSON object, **logical name -> name in the bucket**. Keys are paths relative to `apps/client/assets/`
+Flat JSON object, **logical name -> name in the bucket**. Keys are paths relative to `apps/client/public/`
 with `/`, sorted; values are the same path with a content hash before the last extension:
 
 ```json
 {
-  "audio/explode.ogg": "audio/explode.b8bd6fa216.ogg",
-  "sprites/player.png": "sprites/player.3f0aadd166.png"
+  "audio/bomb-place.ogg": "audio/bomb-place.b8bd6fa216.ogg",
+  "tiles/tileset.png": "tiles/tileset.3f0aadd166.png"
 }
 ```
 
 - Hash = first 10 hex chars of the sha256 of the file. Same bytes = same name, so it never needs to be purged.
 - The file URL is `<public base URL of the bucket>/<value>`. The base URL is **not** in the manifest (the
   format is fixed by CAR-3789); the client gets it from its own config (FE-16 decides how).
-- Game code only knows logical names (`sprites/player.png`) and looks them up here. A name that is not a key
+- Game code only knows logical names (`tiles/tileset.png`) and looks them up here. A name that is not a key
   is a bug: fail loudly, do not fall back to guessing a file name.
 - Load images with `crossOrigin = 'anonymous'`: the bucket answers CORS only for the game origins listed in
   `r2-cors.<env>.json` (GET / HEAD).
-- Only these extensions are uploaded: png jpg jpeg gif webp svg ogg mp3 wav json. Anything else in `assets/`
-  (e.g. `CREDITS.md`) is ignored and logged.
+- Only these extensions are uploaded: png jpg jpeg gif webp svg ogg mp3 wav json. Anything else in `public/`
+  (e.g. `_headers`, `LICENSE.txt`) is ignored and logged.
 
 ## Headers
 
