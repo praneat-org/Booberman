@@ -11,11 +11,14 @@ import { type JoinFailureKind, JoinWatcher } from '../net/joinWatcher';
 import type { Unsubscribe } from '../net/Transport';
 import { CurseFrames } from '../ui/CurseFrames';
 import { attachDebugOverlay } from '../ui/DebugOverlay';
+import { EndOverlay } from '../ui/EndOverlay';
+import { KillFeedOverlay } from '../ui/KillFeedOverlay';
 import { RoomBar } from '../ui/RoomBar';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
 import { toCurseFrames } from '../view/curseFrames';
 import { debugEnabled } from '../view/debugStats';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
+import { toRematchView } from '../view/endView';
 import { BOARD_HEIGHT_PX, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
 import { type Drawable, RoundView } from '../view/roundView';
@@ -55,6 +58,8 @@ export class GameScene extends Phaser.Scene {
   private bombPressed = false;
   private target: GameSceneData = {};
   private audio: GameAudio | undefined;
+  private killFeed: KillFeedOverlay | undefined;
+  private endScreen: EndOverlay | undefined;
 
   constructor() {
     super(SceneKey.Game);
@@ -80,6 +85,8 @@ export class GameScene extends Phaser.Scene {
     this.selfId = undefined;
     this.bombPressed = false;
     this.audio = undefined;
+    this.killFeed = undefined;
+    this.endScreen = undefined;
     // the HUD strip lives above the board: the game camera only covers the board
     this.cameras.main.setViewport(0, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, BOARD_HEIGHT_PX);
     this.curseFrames = new CurseFrames(this, Depth.Curse, TILE_SIZE);
@@ -148,6 +155,13 @@ export class GameScene extends Phaser.Scene {
     cleanups.push(() => audio.dispose());
     const muteButton = new MuteButton(audio);
     cleanups.push(() => muteButton.destroy());
+    // kill feed + end screen (FE-21): DOM layers that only show what the server's events said
+    const killFeed = new KillFeedOverlay();
+    this.killFeed = killFeed;
+    cleanups.push(() => killFeed.destroy());
+    const endScreen = new EndOverlay({ onRematch: () => transport.rematch() });
+    this.endScreen = endScreen;
+    cleanups.push(() => endScreen.destroy());
     cleanups.push(...this.watchJoin(transport, join));
     cleanups.push(...this.bindKeyboard(audio));
     if (debugEnabled(window.location.search)) {
@@ -168,6 +182,8 @@ export class GameScene extends Phaser.Scene {
       transport.disconnect();
       this.sender = undefined;
       this.audio = undefined;
+      this.killFeed = undefined;
+      this.endScreen = undefined;
     });
     transport.connect();
 
@@ -179,6 +195,8 @@ export class GameScene extends Phaser.Scene {
         selfId: () => this.selfId,
         audio,
         sound: this.sound,
+        end: () => this.round.end,
+        rematch: () => this.round.rematch,
       };
     }
   }
@@ -194,6 +212,21 @@ export class GameScene extends Phaser.Scene {
     this.drawItems(d.items);
     this.drawPlayers(d.players);
     this.curseFrames?.sync(toCurseFrames(d.players, this.round.latest?.tick ?? 0));
+    this.drawOverlays();
+  }
+
+  /** Kill feed + end screen follow the round view every frame; both write only what changed. */
+  private drawOverlays(): void {
+    this.killFeed?.sync(this.round.killFeed.visible(performance.now()), () =>
+      this.game.canvas.getBoundingClientRect(),
+    );
+    const end = this.round.end;
+    const now = Date.now();
+    this.endScreen?.sync(
+      end,
+      end && toRematchView(this.round.rematch, this.round.roster, this.selfId, now),
+      now,
+    );
   }
 
   /**
