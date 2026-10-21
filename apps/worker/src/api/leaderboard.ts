@@ -1,4 +1,9 @@
-import { LEADERBOARD_LIMIT, LeaderboardBy, type LeaderboardResponse } from '@booberman/protocol';
+import {
+  LEADERBOARD_LIMIT,
+  type LeaderboardApiErrorCode,
+  LeaderboardBy,
+  type LeaderboardResponse,
+} from '@booberman/protocol';
 import { jsonError } from '../http/router';
 
 export const CACHE_SECONDS = 60;
@@ -28,7 +33,7 @@ export async function leaderboard(
   ctx: Pick<ExecutionContext, 'waitUntil'>,
 ): Promise<Response> {
   const parsed = LeaderboardBy.safeParse(new URL(request.url).searchParams.get('by'));
-  if (!parsed.success) return jsonError(400, 'BAD_BY');
+  if (!parsed.success) return jsonError(400, 'BAD_BY' satisfies LeaderboardApiErrorCode);
   const by = parsed.data;
 
   const cache = caches.default;

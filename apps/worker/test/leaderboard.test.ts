@@ -1,5 +1,10 @@
 import { env, exports } from 'cloudflare:workers';
-import { LEADERBOARD_LIMIT, LEADERBOARD_PATH, type LeaderboardResponse } from '@booberman/protocol';
+import {
+  LEADERBOARD_LIMIT,
+  LEADERBOARD_PATH,
+  LeaderboardApiErrorCode,
+  type LeaderboardResponse,
+} from '@booberman/protocol';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { leaderboardSql } from '../src/api/leaderboard';
 
@@ -75,7 +80,7 @@ describe('GET /api/leaderboard', () => {
   it.each(['', '?by=', '?by=deaths', '?by=WINS'])('400 BAD_BY for %j', async (qs) => {
     const res = await get(qs);
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'BAD_BY' });
+    expect(await res.json()).toEqual({ error: LeaderboardApiErrorCode.enum.BAD_BY });
   });
 
   it('405 for POST', async () => {
