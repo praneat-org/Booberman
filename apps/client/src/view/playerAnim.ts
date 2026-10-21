@@ -1,16 +1,22 @@
 import type { PlayerState } from '@booberman/protocol';
+import { KenneyFrame } from '../assets/kenneyTinyDungeon';
 
 export type Facing = 'down' | 'up' | 'left' | 'right';
 
 export const FACINGS: readonly Facing[] = ['down', 'up', 'left', 'right'];
 /** Frame in the player sheet when standing still (down, up, left, right). */
-export const IDLE_FRAME: Record<Facing, number> = { down: 0, up: 1, left: 2, right: 3 };
+export const IDLE_FRAME: Record<Facing, number> = {
+  down: KenneyFrame.player,
+  up: KenneyFrame.player,
+  left: KenneyFrame.player,
+  right: KenneyFrame.player,
+};
 /** First / last frame of each walk cycle in the player sheet. */
 export const WALK_FRAMES: Record<Facing, readonly [number, number]> = {
-  down: [4, 5],
-  up: [6, 7],
-  left: [8, 9],
-  right: [10, 11],
+  down: [KenneyFrame.player, KenneyFrame.player],
+  up: [KenneyFrame.player, KenneyFrame.player],
+  left: [KenneyFrame.player, KenneyFrame.player],
+  right: [KenneyFrame.player, KenneyFrame.player],
 };
 export const walkAnimKey = (facing: Facing): string => `walk-${facing}`;
 

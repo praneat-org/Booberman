@@ -1,5 +1,6 @@
 import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
+import { KenneyFrame } from '../assets/kenneyTinyDungeon';
 import { GameAudio } from '../audio/GameAudio';
 import { MuteButton } from '../audio/MuteButton';
 import { loadMuted, saveMuted } from '../audio/muteStore';
@@ -23,7 +24,7 @@ import type { LobbySceneData } from './LobbyScene';
 
 /** Draw order, back to front. */
 const Depth = { Box: 1, Item: 2, Bomb: 3, Flame: 4, Player: 10, Marker: 11, Curse: 12 } as const;
-const MARKER_OFFSET = { x: (TILE_SIZE - 8) / 2, y: -7 };
+const MARKER_OFFSET = { x: 0, y: -7 };
 
 type Sprite = Phaser.GameObjects.Sprite;
 
@@ -65,7 +66,7 @@ export class GameScene extends Phaser.Scene {
 
   create(): void {
     const map = this.make.tilemap({ key: AssetKey.Arena });
-    const tiles = map.addTilesetImage('tileset', AssetKey.Tiles);
+    const tiles = map.addTilesetImage('tileset', AssetKey.Kenney);
     if (!tiles) throw new Error('tileset "tileset" missing from arena.json');
     map.createLayer('ground', tiles, 0, 0);
 
@@ -83,7 +84,7 @@ export class GameScene extends Phaser.Scene {
     this.cameras.main.setViewport(0, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, BOARD_HEIGHT_PX);
     this.curseFrames = new CurseFrames(this, Depth.Curse, TILE_SIZE);
     this.marker = this.add
-      .image(0, 0, AssetKey.Marker)
+      .image(0, 0, AssetKey.Kenney, KenneyFrame.marker)
       .setOrigin(0, 0)
       .setDepth(Depth.Marker)
       .setVisible(false);
@@ -251,7 +252,7 @@ export class GameScene extends Phaser.Scene {
     const views = this.round.boxes.list().map((b) => ({ key: `${b.x},${b.y}`, ...b }));
     this.sync(this.boxSprites, views, (v) =>
       this.add
-        .sprite(v.x * TILE_SIZE, v.y * TILE_SIZE, AssetKey.Box)
+        .sprite(v.x * TILE_SIZE, v.y * TILE_SIZE, AssetKey.Kenney, KenneyFrame.box)
         .setOrigin(0, 0)
         .setDepth(Depth.Box),
     );
@@ -259,29 +260,42 @@ export class GameScene extends Phaser.Scene {
 
   private drawBombs(views: Drawable['bombs']): void {
     this.sync(this.bombSprites, views, (v) =>
-      this.add.sprite(v.px, v.py, AssetKey.Bomb, 0).setOrigin(0, 0).setDepth(Depth.Bomb),
+      this.add
+        .sprite(v.px, v.py, AssetKey.Kenney, KenneyFrame.bomb)
+        .setOrigin(0, 0)
+        .setDepth(Depth.Bomb),
     );
     for (const v of views) {
-      // bright frame + slight pulse; the phase comes from the server's fuse
+      // The Kenney pack has a single barrel frame; tint and pulse it as the fuse runs down.
       this.bombSprites
         .get(v.key)
-        ?.setFrame(v.bright ? 1 : 0)
+        ?.setTint(v.bright ? 0xffffff : 0x999999)
         .setScale(v.bright ? 1 : 0.9);
     }
   }
 
   private drawFlames(views: Drawable['flames']): void {
     this.sync(this.flameSprites, views, (v) =>
-      this.add.sprite(v.px, v.py, AssetKey.Flame, v.frame).setOrigin(0, 0).setDepth(Depth.Flame),
+      this.add
+        .sprite(v.px, v.py, AssetKey.Kenney, KenneyFrame.flame[0])
+        .setOrigin(0, 0)
+        .setDepth(Depth.Flame),
     );
-    for (const v of views) this.flameSprites.get(v.key)?.setFrame(v.frame);
+    for (const v of views)
+      this.flameSprites
+        .get(v.key)
+        ?.setFrame(v.frame === 0 ? KenneyFrame.flame[0] : KenneyFrame.flame[1]);
   }
 
   private drawItems(views: Drawable['items']): void {
     this.sync(this.itemSprites, views, (v) =>
-      this.add.sprite(v.px, v.py, AssetKey.Items, v.frame).setOrigin(0, 0).setDepth(Depth.Item),
+      this.add
+        .sprite(v.px, v.py, AssetKey.Kenney, KenneyFrame.curse)
+        .setOrigin(0, 0)
+        .setDepth(Depth.Item),
     );
-    for (const v of views) this.itemSprites.get(v.key)?.setFrame(v.frame);
+    for (const v of views)
+      this.itemSprites.get(v.key)?.setFrame(v.frame === 0 ? KenneyFrame.curse : KenneyFrame.kick);
   }
 
   private drawPlayers(players: Drawable['players']): void {
@@ -291,11 +305,15 @@ export class GameScene extends Phaser.Scene {
       seen.add(view.id);
       let sprite = this.players.get(view.id);
       if (!sprite) {
-        sprite = this.add.sprite(0, 0, AssetKey.Player, 0).setDepth(Depth.Player);
+        sprite = this.add.sprite(0, 0, AssetKey.Kenney, KenneyFrame.player).setDepth(Depth.Player);
         this.players.set(view.id, sprite);
       }
       // origin at the sprite centre so the death spin / shrink stays on the tile
-      sprite.setOrigin(0.5, 0.5).setPosition(view.px + TILE_SIZE / 2, view.py + TILE_SIZE / 2);
+      const bob = anim.moving ? Math.round(Math.sin(this.time.now / 80)) : 0;
+      sprite
+        .setOrigin(0.5, 0.5)
+        .setPosition(view.px + TILE_SIZE / 2, view.py + TILE_SIZE / 2 - bob)
+        .setFlipX(anim.facing === 'left');
       sprite.setTint(view.tint);
       if (anim.phase === 'dying') {
         sprite.anims.stop();
@@ -322,7 +340,7 @@ export class GameScene extends Phaser.Scene {
     this.placeMarker(selfSprite);
   }
 
-  /** Arrow above our own head, bobbing; hidden while we are dead / not yet in the snapshot. */
+  /** Kenney marker brackets our player; hidden while we are dead / not yet in the snapshot. */
   private placeMarker(self: Sprite | undefined): void {
     if (!this.marker) return;
     if (!self) {
