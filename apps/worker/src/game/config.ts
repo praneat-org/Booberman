@@ -17,6 +17,8 @@ export interface GameConfig {
   readonly walkTicksPerTile: number;
   /** Tiles per tick; `1 / walkTicksPerTile` unless a test overrides it. */
   readonly playerSpeed: number;
+  /** Ticks per tile for a kicked bomb (2 → 0.1 s). */
+  readonly bombSlideTicksPerTile: number;
   /** Ticks from placing a bomb to its explosion (40 → 2 s). */
   readonly bombFuseTicks: number;
   /** Ticks a flame tile stays lethal (10 → 0.5 s). */
@@ -31,7 +33,7 @@ export interface GameConfig {
   readonly itemDropChance: number;
   /** Share of dropped items that are a curse (0–1); the rest are `otherItemKind`. */
   readonly curseItemShare: number;
-  /** Kind of every dropped item that is not a curse (kick has no effect yet: CAR-3801). */
+  /** Kind of every dropped item that is not a curse (kick lets the holder kick bombs: CAR-3801). */
   readonly otherItemKind: ItemKind;
   /** Ticks of reverse-controls curse after picking one up (120 → 6 s per D39). */
   readonly curseTicks: number;
@@ -55,6 +57,7 @@ const WALK_TICKS_PER_TILE = 4;
 export const GAME_CONFIG: GameConfig = {
   walkTicksPerTile: WALK_TICKS_PER_TILE,
   playerSpeed: 1 / WALK_TICKS_PER_TILE,
+  bombSlideTicksPerTile: 2,
   bombFuseTicks: 40,
   flameTicks: 10,
   roundTicks: 3000,

@@ -68,6 +68,8 @@ export interface PlayerSim {
   readonly cursedBySession: number | null;
   /** Ticks left in which this player cannot hand the curse back to `cursedBy` (0 = free). */
   readonly curseCooldown: number;
+  /** Picked up the kick item (BE-45): walking into a bomb kicks it. Lasts until death / round end. */
+  readonly hasKick: boolean;
   /** Round counters for the end screen / D1 (BE-41). */
   readonly stats: PlayerStats;
   /** Highest input seq applied so far. */
@@ -93,6 +95,15 @@ export interface Bomb {
   /** `PlayerSim.session` of the owner (D33); `ownerId` alone is a slot and can be reused. */
   readonly ownerSession: number;
   readonly fuse: number;
+  /** Set while the bomb slides after a kick (BE-45): the direction of the hops. Whole tiles only. */
+  readonly slide?: Exclude<Dir, 'none'>;
+  /** Ticks until the next hop of a sliding bomb. */
+  readonly slideCd?: number;
+  /**
+   * Last player who kicked this bomb (kept after it stops): the credit for what its flames kill
+   * (`cause: kick`). `session` as in D33; a kicker who has left counts for nobody.
+   */
+  readonly kickedBy?: { readonly id: PlayerId; readonly session: number };
 }
 
 /**
@@ -107,6 +118,8 @@ export interface Flame {
   readonly ownerSession: number;
   /** Ticks left; the tile is removed when it reaches 0. */
   readonly ttl: number;
+  /** `kick` when the bomb that lit it was kicked (BE-45); absent = a normal bomb. */
+  readonly kind?: 'kick';
 }
 
 /** An item lying on the floor. `droppedBy` = whose flame broke the box (not sent to clients). */

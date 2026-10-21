@@ -8,6 +8,8 @@ import type { Bomb, Flame, Item, PlayerId } from './types';
 interface Owner {
   readonly id: PlayerId;
   readonly session: number;
+  /** `kick` when the credit is a kicker's (BE-45); it travels down a chain with the credit. */
+  readonly kind?: 'kick';
 }
 
 const tileKey = (x: number, y: number) => y * GRID_WIDTH + x;
@@ -78,11 +80,15 @@ export function resolveExplosions(input: BlastInput, cfg: GameConfig): BlastResu
   const burning = new Map<number, Owner>();
   for (const f of flames) {
     if (!burning.has(tileKey(f.x, f.y)))
-      burning.set(tileKey(f.x, f.y), { id: f.ownerId, session: f.ownerSession });
+      burning.set(tileKey(f.x, f.y), { id: f.ownerId, session: f.ownerSession, kind: f.kind });
   }
   bombs.forEach((b, i) => {
     if (b.fuse <= 0) {
-      enqueue(i, { id: b.ownerId, session: b.ownerSession });
+      // a kicked bomb is credited to its last kicker, not to whoever placed it
+      enqueue(
+        i,
+        b.kickedBy ? { ...b.kickedBy, kind: 'kick' } : { id: b.ownerId, session: b.ownerSession },
+      );
       return;
     }
     const fire = burning.get(tileKey(b.x, b.y));
@@ -98,7 +104,14 @@ export function resolveExplosions(input: BlastInput, cfg: GameConfig): BlastResu
     const { cells, boxes } = reach(grid, bomb, cfg);
     for (const k of boxes) if (!broken.has(k)) broken.set(k, owner);
     for (const [x, y] of cells) {
-      newFlames.push({ x, y, ownerId: owner.id, ownerSession: owner.session, ttl: cfg.flameTicks });
+      newFlames.push({
+        x,
+        y,
+        ownerId: owner.id,
+        ownerSession: owner.session,
+        ttl: cfg.flameTicks,
+        ...(owner.kind && { kind: owner.kind }),
+      });
       bombs.forEach((other, j) => {
         if (other.x === x && other.y === y) enqueue(j, owner);
       });

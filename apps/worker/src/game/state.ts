@@ -28,6 +28,7 @@ export function createInitialState(
       cursedBy: null,
       cursedBySession: null,
       curseCooldown: 0,
+      hasKick: false,
       stats: EMPTY_STATS,
       ackSeq: 0,
       heldDir: 'none',

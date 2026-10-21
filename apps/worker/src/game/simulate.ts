@@ -5,6 +5,7 @@ import { resolveExplosions } from './bombs';
 import { DEFAULT_CONFIG } from './config';
 import { effectiveDir, stepCurses } from './curse';
 import { VECTORS } from './dirs';
+import { kickBombs, slideBombs } from './kick';
 import { checkRoundEnd } from './round';
 import { summarizeRound } from './summary';
 import type {
@@ -121,7 +122,7 @@ function applyDeaths(
     if (!fire) return p;
     const owner = creditOf(players, fire);
     // players in id order, so the kills (and their events) come out in id order too
-    kills.push(attributeKill(players, p, { owner, kind: 'bomb' }));
+    kills.push(attributeKill(players, p, { owner, kind: fire.kind ?? 'bomb' }));
     return {
       ...p,
       alive: false,
@@ -134,7 +135,7 @@ function applyDeaths(
 }
 
 /**
- * One 50 ms tick, in a fixed order: age bombs and flames -> walk -> place bombs ->
+ * One 50 ms tick, in a fixed order: age bombs and flames -> walk -> kick + slide bombs (kick.ts) -> place bombs ->
  * explode due bombs and their chain (boxes break, items drop) -> deaths (credit and counters:
  * attribution.ts, one `kill` event each) -> curses (age, pick up, pass on by contact; curse.ts) -> round end
  * (last survivor / all dead / time limit; D32 in the PR; elimination needs `contested`). After the end the state is frozen.
@@ -158,7 +159,13 @@ export function simulate(
   const blast = resolveExplosions(
     {
       grid: state.grid,
-      bombs: placeBombs(walked, inputs, counting, cfg),
+      // kicks and slides come after walking (positions are final) and before new bombs and blasts
+      bombs: placeBombs(
+        walked,
+        inputs,
+        slideBombs(walked, kickBombs(walked, counting, state.grid), state.grid, cfg),
+        cfg,
+      ),
       flames: burning,
       items: state.items,
       rngSeed: state.rngSeed,
