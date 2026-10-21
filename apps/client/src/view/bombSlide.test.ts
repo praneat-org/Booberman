@@ -67,6 +67,17 @@ describe('BombSlideTween', () => {
 });
 
 describe('toBombViews with drawn positions', () => {
+  it('a bomb that did not hop keeps its own track, even when the snapshot lists the bombs in another order', () => {
+    const t = new BombSlideTween();
+    t.update([bomb(3, 'right'), bomb(4, 'right')], 10, 10);
+    t.update([bomb(3, 'right'), bomb(4, 'right')], 11, 12);
+    // neither moved: the bomb on 4 must not be taken for the one on 3 hopping to 4
+    expect(t.update([bomb(4, 'right'), bomb(3, 'right')], 11, 12.5)).toEqual([
+      { x: 4, y: 1 },
+      { x: 3, y: 1 },
+    ]);
+  });
+
   it('uses the tween position for pixels and keeps the tile key', () => {
     const [v] = toBombViews([bomb(3, 'right')], [{ x: 2.5, y: 1 }]);
     expect(v?.px).toBe(2.5 * TILE_SIZE);

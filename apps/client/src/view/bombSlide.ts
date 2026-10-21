@@ -46,12 +46,11 @@ export class BombSlideTween {
     const out = bombs.map((b) => {
       if (!b.slide) return { x: b.x, y: b.y };
       const [dx, dy] = VEC[b.slide] as readonly [number, number];
-      const prev = old.find(
-        (t) =>
-          !used.has(t) &&
-          t.slide === b.slide &&
-          ((t.x === b.x && t.y === b.y) || (t.x + dx === b.x && t.y + dy === b.y)),
-      );
+      const free = (t: Track) => !used.has(t) && t.slide === b.slide;
+      // a bomb that did not move keeps its own track first: only then is it the one behind hopping in
+      const prev =
+        old.find((t) => free(t) && t.x === b.x && t.y === b.y) ??
+        old.find((t) => free(t) && t.x + dx === b.x && t.y + dy === b.y);
       let track: Track;
       if (prev && prev.x === b.x && prev.y === b.y) track = prev;
       else
