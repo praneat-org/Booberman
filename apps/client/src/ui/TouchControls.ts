@@ -1,10 +1,11 @@
 import { el } from '../lobby/dom';
 import {
-  hitButton,
+  hitTouch,
   type Rect,
   type TouchButton,
   type TouchEnv,
   type TouchHandlers,
+  type TouchHit,
   TouchPointers,
 } from '../view/touchControls';
 
@@ -61,13 +62,16 @@ export function browserTouchEnv(): TouchEnv {
  * On-screen D-pad + bomb button for phones (FE-28). DOM, like the room bar: real buttons are easy
  * to hit and, in a flex column under `#app`, the canvas gets whatever height is left, so they never
  * sit on the board in portrait. All the thinking (which finger is on which button, multi-touch,
- * dragging off) is in `TouchPointers`; this class only turns pointer events into its calls and
- * paints which buttons are down. The handlers drive the same `DirectionTracker` as the keyboard.
+ * dragging off) is in `TouchPointers` and `hitTouch`; this class only turns pointer events into
+ * their calls and paints which buttons are down. The handlers drive the same `DirectionTracker`
+ * as the keyboard. The D-pad listens as a whole (not per button): where the finger is inside the
+ * pad's box picks the direction, so the empty centre and the gaps between the buttons never drop it.
  */
 export class TouchControls {
   private readonly root = el('div', 'bb-touch');
   private readonly styleEl = el('style');
   private readonly buttons = new Map<TouchButton, HTMLButtonElement>();
+  private readonly pad = el('div', 'bb-touch-pad');
   private readonly pointers: TouchPointers;
   private readonly offs: (() => void)[] = [];
 
@@ -92,14 +96,17 @@ export class TouchControls {
     this.root.setAttribute('aria-label', 'ปุ่มควบคุม');
     this.root.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    const pad = el('div', 'bb-touch-pad');
     for (const name of BUTTONS) {
       const button = this.makeButton(name);
       this.buttons.set(name, button);
-      (name === 'bomb' ? this.root : pad).append(button);
+      (name === 'bomb' ? this.root : this.pad).append(button);
     }
-    this.root.prepend(pad);
+    this.root.prepend(this.pad);
     this.root.prepend(this.styleEl);
+    // pointer events of the four direction buttons bubble to the pad: it decides from the position
+    this.listen(this.pad, (e) => this.hit(e));
+    const bomb = this.buttons.get('bomb');
+    if (bomb) this.listen(bomb, () => 'bomb');
 
     // blur / hidden tab: a finger that is still down will never send its pointerup here
     const release = () => this.pointers.clear();
@@ -127,32 +134,42 @@ export class TouchControls {
     button.type = 'button';
     button.tabIndex = -1; // a finger is all this is for; never a keyboard focus stop
     button.setAttribute('aria-label', LABELS[name]);
-    button.addEventListener('pointerdown', (e) => {
-      e.preventDefault(); // no focus, no text selection, no emulated mouse events
-      // keep receiving this finger's moves and its up even after it slides off the button
-      try {
-        button.setPointerCapture(e.pointerId);
-      } catch {
-        // a pointer the browser no longer knows (it lifted already): the press still counts, its up follows
-      }
-      this.pointers.down(e.pointerId, name);
-    });
-    button.addEventListener('pointermove', (e) => {
-      this.pointers.move(e.pointerId, hitButton(this.rects(), e.clientX, e.clientY));
-    });
-    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) {
-      button.addEventListener(type, (e) => this.pointers.up(e.pointerId));
-    }
     return button;
   }
 
-  private rects(): Record<TouchButton, Rect> {
-    const rects = {} as Record<TouchButton, Rect>;
-    for (const [name, button] of this.buttons) {
-      const r = button.getBoundingClientRect();
-      rects[name] = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  /**
+   * Pointer events of one touch area. `onDown` says what the finger landed on; moves are re-read from
+   * where the finger is now (`hit`), so a finger that slid away is still followed, and let go of when
+   * it is over neither the pad nor the bomb.
+   */
+  private listen(area: HTMLElement, onDown: (e: PointerEvent) => TouchHit | undefined): void {
+    area.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); // no focus, no text selection, no emulated mouse events
+      // keep receiving this finger's moves and its up even after it slides off the area
+      try {
+        area.setPointerCapture(e.pointerId);
+      } catch {
+        // a pointer the browser no longer knows (it lifted already): the press still counts, its up follows
+      }
+      const hit = onDown(e);
+      if (hit !== undefined) this.pointers.down(e.pointerId, hit);
+    });
+    area.addEventListener('pointermove', (e) => this.pointers.move(e.pointerId, this.hit(e)));
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) {
+      area.addEventListener(type, (e) => this.pointers.up(e.pointerId));
     }
-    return rects;
+  }
+
+  /** What is under this pointer right now, by position. */
+  private hit(e: PointerEvent): TouchHit | undefined {
+    return hitTouch(this.rect(this.pad), this.rect(this.buttons.get('bomb')), e.clientX, e.clientY);
+  }
+
+  private rect(node: HTMLElement | undefined): Rect {
+    const r = node?.getBoundingClientRect();
+    return r
+      ? { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
+      : { left: 0, top: 0, right: 0, bottom: 0 };
   }
 
   private paint(button: TouchButton, down: boolean): void {
