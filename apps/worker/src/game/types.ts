@@ -39,6 +39,16 @@ export interface PlayerStats {
   readonly trollPoints: number;
 }
 
+/** What a dead player is doing as a ghost (CAR-3802); the counters tick down 1 per tick. */
+export interface GhostState {
+  /** Ticks until the ghost may step to the next rim tile. */
+  readonly moveCd: number;
+  /** Ticks until the ghost may throw a bomb (0 = ready). */
+  readonly throwCd: number;
+  /** True only on the tick the player became a ghost (snapshot `teleport`). */
+  readonly teleport: boolean;
+}
+
 export interface PlayerSim {
   readonly id: PlayerId;
   /**
@@ -83,6 +93,8 @@ export interface PlayerSim {
    * and announced as the `kill` event.
    */
   readonly killedBy?: PlayerId | typeof DEPARTED;
+  /** Present from the tick the player dies: they play on as a ghost on the rim of the board. */
+  readonly ghost?: GhostState;
 }
 
 /** A bomb on the board. `fuse` counts down to 0, then it explodes. */
@@ -93,6 +105,8 @@ export interface Bomb {
   /** `PlayerSim.session` of the owner (D33); `ownerId` alone is a slot and can be reused. */
   readonly ownerSession: number;
   readonly fuse: number;
+  /** `'ghost'` = lobbed by a ghost: smaller blast, and the kill counts as a ghost kill. */
+  readonly kind?: 'ghost';
 }
 
 /**
@@ -107,6 +121,8 @@ export interface Flame {
   readonly ownerSession: number;
   /** Ticks left; the tile is removed when it reaches 0. */
   readonly ttl: number;
+  /** Kind of bomb that lit it (absent = plain bomb); decides the kill `cause`. */
+  readonly kind?: 'ghost';
 }
 
 /** An item lying on the floor. `droppedBy` = whose flame broke the box (not sent to clients). */

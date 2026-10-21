@@ -44,6 +44,20 @@ export interface GameConfig {
   readonly curseTransferCooldownTicks: number;
   /** Playtest switch: a cursed player cannot drop bombs (they can only chase to pass it on). */
   readonly curseBlocksBombing: boolean;
+  /** Ghost revenge (CAR-3802). Ticks a ghost takes to walk one rim tile (3 → 0.15 s). */
+  readonly ghostWalkTicksPerTile: number;
+  /** Ticks between a ghost's throws (200 → 10 s). */
+  readonly ghostThrowCooldownTicks: number;
+  /** Ticks before a new ghost's first throw (100 → 5 s). */
+  readonly ghostFirstThrowTicks: number;
+  /** Ticks from a ghost's throw to the explosion (30 → 1.5 s). */
+  readonly ghostBombFuseTicks: number;
+  /** Flame reach of a ghost's bomb in tiles. */
+  readonly ghostBombRadius: number;
+  /** A ghost's bomb lands this many tiles in from the rim, at least … */
+  readonly ghostThrowMinRange: number;
+  /** … and at most. */
+  readonly ghostThrowMaxRange: number;
   /** Chance a free tile starts as a box (0–1). */
   readonly boxChance: number;
   /** Points per credited kill and per curse passed on (CAR-3798); a self-kill earns nothing. */
@@ -67,6 +81,13 @@ export const GAME_CONFIG: GameConfig = {
   curseMinTicksAfterTransfer: 80,
   curseTransferCooldownTicks: 20,
   curseBlocksBombing: false,
+  ghostWalkTicksPerTile: 3,
+  ghostThrowCooldownTicks: 200,
+  ghostFirstThrowTicks: 100,
+  ghostBombFuseTicks: 30,
+  ghostBombRadius: 1,
+  ghostThrowMinRange: 1,
+  ghostThrowMaxRange: 5,
   boxChance: 0.72,
   trollPoints: { curse: 3, ghost: 3, kick: 2, bomb: 1, self: 0, transfer: 1 },
 };

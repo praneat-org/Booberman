@@ -8,6 +8,7 @@ import type { Bomb, Flame, Item, PlayerId } from './types';
 interface Owner {
   readonly id: PlayerId;
   readonly session: number;
+  readonly kind?: 'ghost';
 }
 
 const tileKey = (x: number, y: number) => y * GRID_WIDTH + x;
@@ -40,9 +41,10 @@ function reach(
 ): { cells: [number, number][]; boxes: number[] } {
   const cells: [number, number][] = [[bomb.x, bomb.y]];
   const boxes: number[] = [];
+  const radius = bomb.kind === 'ghost' ? cfg.ghostBombRadius : cfg.bombRadius;
   for (const dir of FLAME_DIRS) {
     const [dx, dy] = VECTORS[dir];
-    for (let r = 1; r <= cfg.bombRadius; r++) {
+    for (let r = 1; r <= radius; r++) {
       const x = bomb.x + dx * r;
       const y = bomb.y + dy * r;
       const tile = tileAt(grid, x, y);
@@ -78,11 +80,11 @@ export function resolveExplosions(input: BlastInput, cfg: GameConfig): BlastResu
   const burning = new Map<number, Owner>();
   for (const f of flames) {
     if (!burning.has(tileKey(f.x, f.y)))
-      burning.set(tileKey(f.x, f.y), { id: f.ownerId, session: f.ownerSession });
+      burning.set(tileKey(f.x, f.y), { id: f.ownerId, session: f.ownerSession, kind: f.kind });
   }
   bombs.forEach((b, i) => {
     if (b.fuse <= 0) {
-      enqueue(i, { id: b.ownerId, session: b.ownerSession });
+      enqueue(i, { id: b.ownerId, session: b.ownerSession, kind: b.kind });
       return;
     }
     const fire = burning.get(tileKey(b.x, b.y));
@@ -98,7 +100,14 @@ export function resolveExplosions(input: BlastInput, cfg: GameConfig): BlastResu
     const { cells, boxes } = reach(grid, bomb, cfg);
     for (const k of boxes) if (!broken.has(k)) broken.set(k, owner);
     for (const [x, y] of cells) {
-      newFlames.push({ x, y, ownerId: owner.id, ownerSession: owner.session, ttl: cfg.flameTicks });
+      newFlames.push({
+        x,
+        y,
+        ownerId: owner.id,
+        ownerSession: owner.session,
+        ttl: cfg.flameTicks,
+        ...(owner.kind && { kind: owner.kind }),
+      });
       bombs.forEach((other, j) => {
         if (other.x === x && other.y === y) enqueue(j, owner);
       });

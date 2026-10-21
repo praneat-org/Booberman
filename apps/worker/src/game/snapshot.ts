@@ -36,9 +36,15 @@ export function toSnapshot(state: GameState, viewer?: PlayerId): SnapshotMessage
       y: round2(p.y),
       alive: p.alive,
       curse: p.alive ? p.curse : 0,
-      teleport: false,
+      teleport: p.ghost?.teleport ?? false,
+      ...(p.ghost && { ghost: true, throwCooldown: p.ghost.throwCd }),
     })),
-    bombs: state.bombs.map((b) => ({ x: b.x, y: b.y, fuse: b.fuse })),
+    bombs: state.bombs.map((b) => ({
+      x: b.x,
+      y: b.y,
+      fuse: b.fuse,
+      ...(b.kind && { ghost: true }),
+    })),
     flames: uniqueTiles(state.flames),
     items: state.items.map((i) => ({ x: i.x, y: i.y, kind: i.kind })),
   };

@@ -122,12 +122,12 @@ describe('simulate: walking', () => {
     expect(pos(s, 'p1')).toEqual({ x: 2, y: 1 });
   });
 
-  it('dead players do not move', () => {
+  it('dead players do not walk the board: they are moved to the rim as ghosts (CAR-3802)', () => {
     const s0 = openState();
     const dead: GameState = { ...s0, players: s0.players.map((p) => ({ ...p, alive: false })) };
     expect(pos(simulate(dead, inputs({ p1: input('right') })).state, 'p1')).toEqual({
       x: 1,
-      y: 1,
+      y: 0,
     });
   });
 

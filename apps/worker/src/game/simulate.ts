@@ -5,6 +5,7 @@ import { resolveExplosions } from './bombs';
 import { DEFAULT_CONFIG } from './config';
 import { effectiveDir, stepCurses } from './curse';
 import { VECTORS } from './dirs';
+import { spawnGhosts, stepGhosts } from './ghost';
 import { checkRoundEnd } from './round';
 import { summarizeRound } from './summary';
 import type {
@@ -121,7 +122,7 @@ function applyDeaths(
     if (!fire) return p;
     const owner = creditOf(players, fire);
     // players in id order, so the kills (and their events) come out in id order too
-    kills.push(attributeKill(players, p, { owner, kind: 'bomb' }));
+    kills.push(attributeKill(players, p, { owner, kind: fire.kind ?? 'bomb' }));
     return {
       ...p,
       alive: false,
@@ -154,11 +155,13 @@ export function simulate(
   const counting = state.bombs.map((b) => ({ ...b, fuse: b.fuse - 1 }));
   const burning = state.flames.map((f) => ({ ...f, ttl: f.ttl - 1 })).filter((f) => f.ttl > 0);
 
-  const walked = state.players.map((p) => step(p, inputs.get(p.id), state.grid, bombTiles, cfg));
+  const stepped = state.players.map((p) => step(p, inputs.get(p.id), state.grid, bombTiles, cfg));
+  const ghosts = stepGhosts(stepped, inputs, state.grid, counting, cfg);
+  const walked = ghosts.players;
   const blast = resolveExplosions(
     {
       grid: state.grid,
-      bombs: placeBombs(walked, inputs, counting, cfg),
+      bombs: placeBombs(walked, inputs, ghosts.bombs, cfg),
       flames: burning,
       items: state.items,
       rngSeed: state.rngSeed,
@@ -169,7 +172,7 @@ export function simulate(
   const tick = state.tick + 1;
   const deaths = applyDeaths(walked, blast.flames, cfg);
   const cursed = stepCurses(deaths.players, blast.items, cfg);
-  const players = cursed.players;
+  const players = spawnGhosts(cursed.players, cfg);
   // sticky: judged on the players this tick started with, before anyone can leave again
   const contested = state.contested || state.players.length >= 2;
   const result = checkRoundEnd(players, tick, cfg, contested);

@@ -88,9 +88,19 @@ export const PlayerState = z.object({
   curse: z.number().int().min(0),
   /** Place immediately instead of interpolating (e.g. became a ghost). */
   teleport: z.boolean(),
+  /** Dead players play on as ghosts on the rim (CAR-3802); only sent when true. */
+  ghost: z.boolean().optional(),
+  /** Ghosts only: ticks until they can throw a bomb (0 = ready). 20 ticks = 1 s. */
+  throwCooldown: z.number().int().min(0).optional(),
 });
 
-export const BombState = z.object({ x: TileX, y: TileY, fuse: z.number().int().min(0) });
+export const BombState = z.object({
+  x: TileX,
+  y: TileY,
+  fuse: z.number().int().min(0),
+  /** Lobbed by a ghost: draw it small (CAR-3802); only sent when true. */
+  ghost: z.boolean().optional(),
+});
 export const FlameTile = z.tuple([TileX, TileY]);
 export const ItemState = z.object({ x: TileX, y: TileY, kind: ItemKind });
 
