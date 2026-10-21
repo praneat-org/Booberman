@@ -6,6 +6,7 @@ import {
   ManifestError,
   normalizeBaseUrl,
   parseManifest,
+  parseManifestText,
 } from './manifest';
 
 /** `tiles/tileset.png` -> `tiles/tileset.<hash>.png`, built here so no hashed file name sits in the source text. */
@@ -42,6 +43,29 @@ describe('parseManifest', () => {
     '',
   ])('rejects value %j (must stay inside the bucket)', (value) => {
     expect(() => parseManifest({ 'a.png': value })).toThrow(ManifestError);
+  });
+});
+
+describe('parseManifestText', () => {
+  it('parses the text of a manifest', () => {
+    const json = { 'tiles/tileset.png': hashed('tiles/tileset.png') };
+    expect(parseManifestText(JSON.stringify(json))).toEqual(json);
+  });
+
+  it('rejects the index.html an SPA fallback returns for a missing manifest.json', () => {
+    expect(() => parseManifestText('<!doctype html><html><body></body></html>')).toThrow(
+      ManifestError,
+    );
+    expect(() => parseManifestText('<!doctype html><html></html>')).toThrow(/manifest\.json/);
+  });
+
+  it.each(['', '   ', '{', undefined, null, 5])('rejects %j (not JSON text)', (text) => {
+    expect(() => parseManifestText(text)).toThrow(ManifestError);
+  });
+
+  it('still checks the shape after parsing', () => {
+    expect(() => parseManifestText('[]')).toThrow(/not a JSON object/);
+    expect(() => parseManifestText('{"a.png":"https://evil.example/a.png"}')).toThrow(/bad value/);
   });
 });
 

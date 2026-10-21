@@ -29,6 +29,24 @@ function isBucketPath(value: string): boolean {
   return BUCKET_PATH.test(value) && !value.split('/').includes('..');
 }
 
+/**
+ * Parses the raw text of a fetched `manifest.json`. The text is parsed here (not by the Phaser JSON loader)
+ * because a host with an SPA fallback answers a missing manifest with `index.html` and status 200: the loader
+ * would throw from inside its XHR handler and never report a failed file. Here that is an ordinary `ManifestError`.
+ */
+export function parseManifestText(text: unknown): AssetManifest {
+  if (typeof text !== 'string') throw new ManifestError('manifest.json could not be read');
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new ManifestError(
+      'manifest.json is not valid JSON (missing, or the host answered with a page)',
+    );
+  }
+  return parseManifest(json);
+}
+
 /** Checks the shape of a fetched `manifest.json`. An empty object is valid (CI writes `{}` when there is nothing to upload). */
 export function parseManifest(json: unknown): AssetManifest {
   if (typeof json !== 'object' || json === null || Array.isArray(json)) {

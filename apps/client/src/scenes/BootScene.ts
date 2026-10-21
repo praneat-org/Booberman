@@ -4,11 +4,11 @@ import {
   createResolver,
   localResolver,
   normalizeBaseUrl,
-  parseManifest,
+  parseManifestText,
   type ResolveAsset,
 } from '../assets/manifest';
 import { AUDIO_FILES } from '../audio/sfx';
-import { failedRequiredAssets } from '../view/bootAssets';
+import { bootFailures } from '../view/bootAssets';
 import { CANVAS_HEIGHT_PX, CANVAS_WIDTH_PX, loadingBarFill, TILE_SIZE } from '../view/layout';
 import { FACINGS, WALK_FRAMES, walkAnimKey } from '../view/playerAnim';
 import { AssetKey, SceneKey } from './keys';
@@ -16,13 +16,20 @@ import { AssetKey, SceneKey } from './keys';
 const BAR_WIDTH = 120;
 const BAR_HEIGHT = 8;
 const REQUIRED_ASSETS: readonly string[] = [AssetKey.Arena, AssetKey.Sheet];
-/** Loader cache key of manifest.json; it is fetched (from this origin, never cached) only when a bucket base URL is configured. */
+/**
+ * Loader cache key of manifest.json; it is fetched (from this origin, never cached) only when a bucket base URL is configured.
+ * Loaded as text and parsed by `parseManifestText`: with an SPA fallback a missing file is `index.html` with status 200, and
+ * the Phaser JSON loader would throw from its XHR handler without reporting a failed file.
+ */
 const MANIFEST_KEY = 'asset-manifest';
 
 export class BootScene extends Phaser.Scene {
   private failedKeys = new Set<string>();
   /** Why the boot cannot continue although no file failed (bad manifest / base URL / unknown asset name). */
   private bootError: string | null = null;
+  /** True when assets come from a bucket (manifest.json is needed) / once that manifest was parsed. */
+  private usesManifest = false;
+  private manifestReady = false;
   private bar: Phaser.GameObjects.Rectangle[] = [];
 
   constructor() {
@@ -32,6 +39,8 @@ export class BootScene extends Phaser.Scene {
   preload(): void {
     this.failedKeys = new Set();
     this.bootError = null;
+    this.usesManifest = false;
+    this.manifestReady = false;
     const x = (CANVAS_WIDTH_PX - BAR_WIDTH) / 2;
     const y = CANVAS_HEIGHT_PX / 2;
     const frame = this.add.rectangle(x, y, BAR_WIDTH, BAR_HEIGHT).setOrigin(0, 0.5);
@@ -76,14 +85,16 @@ export class BootScene extends Phaser.Scene {
       return;
     }
     const bucket = baseUrl;
+    this.usesManifest = true;
     // a manifest from an earlier attempt would make the loader skip the file (cache key conflict) and never call us
-    this.cache.json.remove(MANIFEST_KEY);
-    this.load.json(MANIFEST_KEY, 'manifest.json');
-    const event = `${Phaser.Loader.Events.FILE_KEY_COMPLETE}json-${MANIFEST_KEY}`;
+    this.cache.text.remove(MANIFEST_KEY);
+    this.load.text(MANIFEST_KEY, 'manifest.json');
+    const event = `${Phaser.Loader.Events.FILE_KEY_COMPLETE}text-${MANIFEST_KEY}`;
     const onManifest = () => {
       try {
-        const manifest = parseManifest(this.cache.json.get(MANIFEST_KEY));
+        const manifest = parseManifestText(this.cache.text.get(MANIFEST_KEY));
         this.queueGameFiles(createResolver(manifest, bucket));
+        this.manifestReady = true;
       } catch (error) {
         this.bootError = errorMessage(error);
       }
@@ -112,9 +123,13 @@ export class BootScene extends Phaser.Scene {
     const silent = AUDIO_FILES.filter((f) => this.failedKeys.has(f.key)).map((f) => f.key);
     if (silent.length > 0)
       console.warn('[audio] failed to load, these sounds stay silent:', silent);
-    const failed = this.bootError
-      ? [this.bootError]
-      : failedRequiredAssets(this.failedKeys, [MANIFEST_KEY, ...REQUIRED_ASSETS]);
+    const failed = bootFailures({
+      bootError: this.bootError,
+      usesManifest: this.usesManifest,
+      manifestReady: this.manifestReady,
+      failedKeys: this.failedKeys,
+      required: REQUIRED_ASSETS,
+    });
     if (failed.length === 0) {
       // only after every required sheet loaded: an anim made from a failed sheet has no frames and `exists` would block a later retry
       this.createAnimations();
