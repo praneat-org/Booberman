@@ -184,11 +184,11 @@ describe('picking up a curse', () => {
     expect(curseSourceOf(replaced, p1)).toBe(DEPARTED);
   });
 
-  it('a kick item is used up with no effect', () => {
+  it('a kick item is used up and gives the kick, not a curse (kick.test.ts)', () => {
     const s = board(['#A..#'], { items: [item(1, 1, 'p2', 'kick')] });
     const { state } = tick(s);
     expect(state.items).toEqual([]);
-    expect(get(state, 'p1').curse).toBe(0);
+    expect(get(state, 'p1')).toMatchObject({ curse: 0, hasKick: true });
   });
 
   it('an already cursed player walks over curse items without taking them', () => {

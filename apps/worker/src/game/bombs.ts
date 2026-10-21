@@ -8,7 +8,8 @@ import type { Bomb, Flame, Item, PlayerId } from './types';
 interface Owner {
   readonly id: PlayerId;
   readonly session: number;
-  readonly kind?: 'ghost';
+  /** `ghost` / `kick` decide the kill `cause`; it travels down a chain with the credit. */
+  readonly kind?: 'ghost' | 'kick';
 }
 
 const tileKey = (x: number, y: number) => y * GRID_WIDTH + x;
@@ -84,7 +85,14 @@ export function resolveExplosions(input: BlastInput, cfg: GameConfig): BlastResu
   }
   bombs.forEach((b, i) => {
     if (b.fuse <= 0) {
-      enqueue(i, { id: b.ownerId, session: b.ownerSession, kind: b.kind });
+      // a kicked bomb is credited to its last kicker, not to whoever placed it; a ghost's bomb stays
+      // the ghost's even when kicked (D35: ghost comes before kick)
+      enqueue(
+        i,
+        b.kind === 'ghost' || !b.kickedBy
+          ? { id: b.ownerId, session: b.ownerSession, kind: b.kind }
+          : { ...b.kickedBy, kind: 'kick' },
+      );
       return;
     }
     const fire = burning.get(tileKey(b.x, b.y));

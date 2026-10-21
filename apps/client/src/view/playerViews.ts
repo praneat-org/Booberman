@@ -11,6 +11,8 @@ export interface PlayerView {
   /** Dead, playing on as a ghost on the rim (BE-46): drawn see-through. */
   ghost: boolean;
   cursed: boolean;
+  /** Has the kick item (FE-23): shown with a green skate beside the sprite. */
+  kick: boolean;
   isSelf: boolean;
   tint: number;
 }
@@ -35,6 +37,7 @@ export function toPlayerViews(
     alive: p.alive,
     ghost: p.ghost === true,
     cursed: p.curse > 0,
+    kick: p.kick === true,
     isSelf: p.id === selfId,
     tint: PLAYER_TINTS[p.id] ?? 0xffffff,
   }));

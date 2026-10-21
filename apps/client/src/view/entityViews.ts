@@ -26,11 +26,15 @@ export function bombBlink(fuse: number): { fast: boolean; bright: boolean } {
   return { fast, bright: Math.floor(fuse / period) % 2 === 0 };
 }
 
-export function toBombViews(bombs: SnapshotMessage['bombs']): BombView[] {
-  return bombs.map((b) => ({
+/** `drawn` = tween positions for sliding bombs (FE-23), same order as `bombs`; absent = on the tile. */
+export function toBombViews(
+  bombs: SnapshotMessage['bombs'],
+  drawn?: readonly { x: number; y: number }[],
+): BombView[] {
+  return bombs.map((b, i) => ({
     key: tileKey(b.x, b.y),
-    px: b.x * TILE_SIZE,
-    py: b.y * TILE_SIZE,
+    px: (drawn?.[i]?.x ?? b.x) * TILE_SIZE,
+    py: (drawn?.[i]?.y ?? b.y) * TILE_SIZE,
     ghost: b.ghost === true,
     ...bombBlink(b.fuse),
   }));

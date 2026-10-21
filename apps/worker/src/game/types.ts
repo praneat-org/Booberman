@@ -78,6 +78,8 @@ export interface PlayerSim {
   readonly cursedBySession: number | null;
   /** Ticks left in which this player cannot hand the curse back to `cursedBy` (0 = free). */
   readonly curseCooldown: number;
+  /** Picked up the kick item (BE-45): walking into a bomb kicks it. Lasts until death / round end. */
+  readonly hasKick: boolean;
   /** Round counters for the end screen / D1 (BE-41). */
   readonly stats: PlayerStats;
   /** Highest input seq applied so far. */
@@ -107,6 +109,15 @@ export interface Bomb {
   readonly fuse: number;
   /** `'ghost'` = lobbed by a ghost: smaller blast, and the kill counts as a ghost kill. */
   readonly kind?: 'ghost';
+  /** Set while the bomb slides after a kick (BE-45): the direction of the hops. Whole tiles only. */
+  readonly slide?: Exclude<Dir, 'none'>;
+  /** Ticks until the next hop of a sliding bomb. */
+  readonly slideCd?: number;
+  /**
+   * Last player who kicked this bomb (kept after it stops): the credit for what its flames kill
+   * (`cause: kick`). `session` as in D33; a kicker who has left counts for nobody.
+   */
+  readonly kickedBy?: { readonly id: PlayerId; readonly session: number };
 }
 
 /**
@@ -121,8 +132,11 @@ export interface Flame {
   readonly ownerSession: number;
   /** Ticks left; the tile is removed when it reaches 0. */
   readonly ttl: number;
-  /** Kind of bomb that lit it (absent = plain bomb); decides the kill `cause`. */
-  readonly kind?: 'ghost';
+  /**
+   * What lit it, when it decides the kill `cause` (absent = a plain bomb): `ghost` = a ghost's bomb
+   * (CAR-3802), `kick` = a kicked bomb (BE-45). A kicked ghost bomb stays `ghost` (D35 order).
+   */
+  readonly kind?: 'ghost' | 'kick';
 }
 
 /** An item lying on the floor. `droppedBy` = whose flame broke the box (not sent to clients). */
