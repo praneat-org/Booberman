@@ -19,6 +19,8 @@ export interface PlayerAnim {
   /** 'alive' → draw normally · 'dying' with progress 0..1 → shrink / spin · 'gone' → draw nothing. */
   phase: 'alive' | 'dying' | 'gone';
   progress: number;
+  /** A dead player playing on as a ghost (BE-46): drawn, never dying / gone. */
+  ghost: boolean;
 }
 
 interface Track {
@@ -46,7 +48,7 @@ export class PlayerAnimTracker {
       if (!t) {
         t = { x: p.x, y: p.y, facing: 'down', moving: false };
         // First sight of a corpse (joined late / new tab): don't replay the death.
-        if (!p.alive) t.diedAt = tick - DEATH_TICKS;
+        if (!p.alive && !p.ghost) t.diedAt = tick - DEATH_TICKS;
         this.tracks.set(p.id, t);
       }
       const dx = p.x - t.x;
@@ -56,7 +58,8 @@ export class PlayerAnimTracker {
       t.x = p.x;
       t.y = p.y;
 
-      if (p.alive) {
+      // a ghost teleports to the rim on the tick it dies: no death spin, it simply turns into a ghost
+      if (p.alive || p.ghost) {
         t.diedAt = undefined;
       } else if (t.diedAt === undefined) {
         t.diedAt = tick;
@@ -68,7 +71,13 @@ export class PlayerAnimTracker {
         progress = Math.min(1, Math.max(0, (tick - t.diedAt) / DEATH_TICKS));
         phase = progress >= 1 ? 'gone' : 'dying';
       }
-      out.set(p.id, { facing: t.facing, moving: t.moving && phase === 'alive', phase, progress });
+      out.set(p.id, {
+        facing: t.facing,
+        moving: t.moving && phase === 'alive',
+        phase,
+        progress,
+        ghost: p.ghost === true,
+      });
     }
     for (const id of this.tracks.keys()) if (!seen.has(id)) this.tracks.delete(id);
     return out;

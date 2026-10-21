@@ -37,6 +37,10 @@ export interface GameSceneData {
   nickname?: string;
 }
 
+/** Ghosts are see-through and their bombs small (BE-46). */
+const GHOST_ALPHA = 0.5;
+const GHOST_BOMB_SCALE = 0.6;
+
 /**
  * Draws the arena from what the server says: walls from the tilemap, boxes from `grid` +
  * `boxDestroyed`, players / bombs / flames / items from the latest snapshot. Nothing here decides
@@ -309,10 +313,14 @@ export class GameScene extends Phaser.Scene {
     );
     for (const v of views) {
       // One bomb frame; tint and pulse it as the fuse runs down.
-      this.bombSprites
-        .get(v.key)
-        ?.setTint(v.bright ? 0xffffff : 0x999999)
-        .setScale(v.bright ? 1 : 0.9);
+      const sprite = this.bombSprites.get(v.key);
+      sprite?.setTint(v.bright ? 0xffffff : 0x999999).setScale(v.bright ? 1 : 0.9);
+      // a ghost's bomb is smaller: shrink around the tile centre
+      if (v.ghost)
+        sprite
+          ?.setOrigin(0.5, 0.5)
+          .setPosition(v.px + TILE_SIZE / 2, v.py + TILE_SIZE / 2)
+          .setScale(GHOST_BOMB_SCALE);
     }
   }
 
@@ -364,7 +372,10 @@ export class GameScene extends Phaser.Scene {
           .setAngle(anim.progress * 360)
           .setAlpha(1 - anim.progress);
       } else {
-        sprite.setScale(1).setAngle(0).setAlpha(1);
+        sprite
+          .setScale(1)
+          .setAngle(0)
+          .setAlpha(view.ghost ? GHOST_ALPHA : 1);
         if (anim.moving) sprite.anims.play(walkAnimKey(anim.facing), true);
         else {
           sprite.anims.stop();

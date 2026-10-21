@@ -8,6 +8,8 @@ export interface PlayerView {
   px: number;
   py: number;
   alive: boolean;
+  /** Dead, playing on as a ghost on the rim (BE-46): drawn see-through. */
+  ghost: boolean;
   cursed: boolean;
   isSelf: boolean;
   tint: number;
@@ -31,6 +33,7 @@ export function toPlayerViews(
     px: p.x * TILE_SIZE,
     py: p.y * TILE_SIZE,
     alive: p.alive,
+    ghost: p.ghost === true,
     cursed: p.curse > 0,
     isSelf: p.id === selfId,
     tint: PLAYER_TINTS[p.id] ?? 0xffffff,

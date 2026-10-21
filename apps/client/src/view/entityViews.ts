@@ -15,6 +15,8 @@ export interface BombView {
   /** Bright phase of the blink (drawn lighter / larger). */
   bright: boolean;
   fast: boolean;
+  /** Lobbed by a ghost (BE-46): drawn smaller. */
+  ghost: boolean;
 }
 
 /** Blink phase comes from the server's `fuse`, not from a local timer, so it can't drift. */
@@ -29,6 +31,7 @@ export function toBombViews(bombs: SnapshotMessage['bombs']): BombView[] {
     key: tileKey(b.x, b.y),
     px: b.x * TILE_SIZE,
     py: b.y * TILE_SIZE,
+    ghost: b.ghost === true,
     ...bombBlink(b.fuse),
   }));
 }
