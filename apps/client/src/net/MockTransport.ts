@@ -254,6 +254,8 @@ export class MockTransport implements Transport {
       playerId: SELF_ID,
       seed: this.opts.seed,
       grid: this.grid,
+      // BE-44: the real server issues one per welcome; the mock has no connection to lose, so any value does
+      token: 'mock-reconnect-token',
     });
     for (const p of this.players) {
       if (p.nickname === undefined) continue;

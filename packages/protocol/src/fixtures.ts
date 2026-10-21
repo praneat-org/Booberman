@@ -76,7 +76,14 @@ export const exampleSnapshot = {
 } as const satisfies ServerMessage;
 
 export const exampleServerMessages = {
-  welcome: { v, t: 'welcome', playerId: 'p2', seed: 4821, grid: exampleGrid() },
+  welcome: {
+    v,
+    t: 'welcome',
+    playerId: 'p2',
+    seed: 4821,
+    grid: exampleGrid(),
+    token: '3f9c1d7ab2e84d60a5b7c1e9f2d40836',
+  },
   snapshot: exampleSnapshot,
   playerJoined: { v, t: 'event', kind: 'playerJoined', playerId: 'p3', nickname: 'บอส' },
   playerLeft: { v, t: 'event', kind: 'playerLeft', playerId: 'p3' },

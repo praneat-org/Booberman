@@ -23,6 +23,12 @@ export const Nickname = z.string().transform((raw, ctx) => {
   });
   return z.NEVER;
 });
+/**
+ * BE-44: secret the server hands out in `welcome` and the client sends back in `join` to take its slot
+ * back after a dropped connection. Opaque to the client; the server decides whether it is valid, so
+ * the schema only bounds the size (a wrong token must answer INVALID_TOKEN, not BAD_MESSAGE).
+ */
+export const ReconnectToken = z.string().min(1).max(64);
 export const Direction = z.enum(['up', 'down', 'left', 'right', 'none']);
 export const ItemKind = z.enum(['curse', 'kick']);
 export type ItemKind = z.infer<typeof ItemKind>;
@@ -32,6 +38,7 @@ export const ErrorCode = z.enum([
   'VERSION_MISMATCH',
   'ROOM_FULL',
   'INVALID_NICKNAME',
+  'INVALID_TOKEN',
 ]);
 export type ErrorCode = z.infer<typeof ErrorCode>;
 
@@ -44,6 +51,12 @@ export const JoinMessage = z.strictObject({
   t: z.literal('join'),
   room: RoomId,
   nickname: Nickname,
+  /**
+   * BE-44: the `welcome.token` of the connection that dropped. With it the server gives back that
+   * player's slot (same playerId, same state) if it is still held (15 s); a wrong or expired token
+   * is answered with `INVALID_TOKEN` and the socket is closed. Without it this is a normal join.
+   */
+  token: ReconnectToken.optional(),
 });
 export const InputMessage = z.strictObject({
   v,
@@ -73,6 +86,11 @@ export const WelcomeMessage = z.object({
   playerId: PlayerId,
   seed: Seed,
   grid: Grid,
+  /**
+   * BE-44: reconnect token, random and bound to `playerId` in this room. A new one is issued by every
+   * `welcome` (a successful reconnect rotates it), so keep the latest. Never sent to other players.
+   */
+  token: ReconnectToken,
 });
 
 export const PlayerState = z.object({

@@ -18,6 +18,7 @@ import {
 import { InputQueue } from './inputQueue';
 import { buildMatchRecord } from './matchRecord';
 import { saveMatch } from './matchStore';
+import { type HeldSlot, HeldSlots, newToken, RECONNECT_HOLD_MS, sameToken } from './reconnect';
 import { RoomKvSync } from './roomKv';
 import { TickStats } from './tickStats';
 
@@ -35,6 +36,11 @@ export type Attachment =
       session: number;
       /** Pressed "play again" (D9). Lives here so it survives hibernation and leaves with the player. */
       ready?: boolean;
+      /**
+       * BE-44: reconnect token from this socket's `welcome`. Stays on the server: it moves to the held slot
+       * when the socket drops. Missing only on sockets that joined before BE-44 was deployed (those just leave).
+       */
+      token?: string;
     };
 
 export type Player = {
@@ -43,7 +49,11 @@ export type Player = {
   nickname: string;
   session: number;
   ready: boolean;
+  token?: string;
 };
+
+/** Someone who holds a slot in the room: connected, or dropped and still inside the 15 s hold (BE-44). */
+export type Seat = Pick<Player, 'playerId' | 'nickname' | 'session'>;
 
 type RoundEndEvent = Extract<GameEvent, { kind: 'roundEnd' }>;
 
@@ -51,6 +61,10 @@ type RoundEndEvent = Extract<GameEvent, { kind: 'roundEnd' }>;
 export const CLOSE_ROOM_FULL = 4001;
 /** Close code sent with INVALID_NICKNAME (BE-35). */
 export const CLOSE_INVALID_NICKNAME = 4002;
+/** Close code sent with INVALID_TOKEN (BE-44): wrong, expired or already used reconnect token. */
+export const CLOSE_INVALID_TOKEN = 4003;
+/** An old socket is closed with this when the same player reconnects before the server noticed the drop (BE-44). */
+export const CLOSE_REPLACED = 4004;
 
 /** 20Hz game loop (CAR-3793). */
 export const TICK_MS = 50;
@@ -91,6 +105,11 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
    * eviction); the value itself is rebuilt from the alarm.
    */
   private rematchDeadline = 0;
+  /**
+   * BE-44: players whose socket dropped less than 15 s ago. Persisted under `held` (the sockets are gone, so
+   * unlike everything else here this cannot be rebuilt from `getWebSockets()`); the DO alarm expires them.
+   */
+  private held = new HeldSlots();
   /** True while a rematch is being set up (an await in the middle): a second trigger does nothing. */
   private restarting = false;
   /**
@@ -111,9 +130,13 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
       this.nextSession = (await ctx.storage.get<number>('nextSession')) ?? 1;
+      this.held = new HeldSlots((await ctx.storage.get<HeldSlot[]>('held')) ?? []);
+      this.rematchDeadline = (await ctx.storage.get<number>('rematchDeadline')) ?? 0;
       const first = this.players()[0];
-      if (!first) return;
-      this.room = attachmentOf(first.ws).room;
+      // a room whose only players are dropped ones has no socket to read the room id from
+      const room = first ? attachmentOf(first.ws).room : this.held.list()[0]?.room;
+      if (!room) return;
+      this.room = room;
       this.seedCache = await this.seed();
       this.waiting = (await ctx.storage.get<boolean>('waiting')) === true;
       if (!this.waiting) await this.recoverRound();
@@ -154,7 +177,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
         if (msg.room !== attachmentOf(ws).room) {
           return this.sendError(ws, 'BAD_MESSAGE', 'join.room does not match the room in the URL');
         }
-        return this.join(ws, msg.nickname);
+        return this.join(ws, msg.nickname, msg.token);
       case 'input': {
         const a = attachmentOf(ws);
         if (!a.joined) return this.sendError(ws, 'BAD_MESSAGE', 'join first');
@@ -169,11 +192,16 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  override async webSocketClose(ws: WebSocket, _code: number, _reason: string): Promise<void> {
+  override async webSocketClose(ws: WebSocket, code: number, _reason: string): Promise<void> {
     // The socket is already closing; re-closing it from here races the cleanup path and can
     // leave the room in a stale joined state during a fast leave->join sequence.
-    const left = this.leave(ws);
-    if (left) await this.rematchAfterLeave();
+    // BE-44: only a connection that was lost (1006, 1001 ...) keeps its slot; the client's own
+    // `close(1000)` (leaving on purpose) gives it up at once, as before.
+    const left = leftOnPurpose(code) ? this.leave(ws) : this.hold(ws) || this.leave(ws);
+    if (left) {
+      await this.rearmAlarm();
+      await this.rematchAfterLeave();
+    }
   }
 
   /** Treated like a close: the player leaves and the others are told. */
@@ -184,8 +212,15 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (left) await this.rematchAfterLeave();
   }
 
-  /** D9 / BE-41: the DO alarm is the rematch deadline. Safe to deliver twice or after the round restarted. */
+  /**
+   * One DO alarm, two jobs, armed for whichever is first (`rearmAlarm`): the end of a dropped player's
+   * 15 s hold (BE-44) and the rematch deadline (D9 / BE-41). Safe to deliver twice or after the round restarted.
+   */
   override async alarm(): Promise<void> {
+    await this.expireHeld(Date.now());
+    // the rematch starts only when its own deadline has come, whatever woke the alarm: a hold's alarm
+    // delivered twice, or one that is early for the countdown, must not start a round nobody asked for
+    if (this.rematchDeadline === 0 || Date.now() < this.rematchDeadline) return;
     if (!this.state?.result || this.players().length === 0) return;
     await this.startRematch();
   }
@@ -202,14 +237,27 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
           nickname: a.nickname,
           session: a.session,
           ready: a.ready === true,
+          token: a.token,
         });
     }
     return players.sort((x, y) => x.playerId.localeCompare(y.playerId));
   }
 
-  private async join(ws: WebSocket, nickname: string): Promise<void> {
+  /**
+   * Everyone who holds a slot, sorted by playerId: the connected players plus the dropped ones still inside
+   * their 15 s (BE-44). This is who is *in the game* and who counts towards the 4 slots; `players()` is who
+   * is connected, i.e. who gets messages and can send input.
+   */
+  seats(): Seat[] {
+    const seats: Seat[] = [...this.players(), ...this.held.list()];
+    return seats.sort((x, y) => x.playerId.localeCompare(y.playerId));
+  }
+
+  private async join(ws: WebSocket, nickname: string, token?: string): Promise<void> {
     if (attachmentOf(ws).joined) return this.sendError(ws, 'BAD_MESSAGE', 'already joined');
-    const others = this.players();
+    if (token !== undefined) return this.resume(ws, token);
+    // a dropped player still holds their slot (BE-44): it is neither free nor counted out of the 4
+    const others = this.seats();
     const taken = new Set(others.map((p) => p.playerId));
     const playerId = PLAYER_IDS.find((id) => !taken.has(id));
     if (!playerId || others.length >= MAX_PLAYERS_PER_ROOM) {
@@ -227,12 +275,14 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     // one id per join (D33), taken synchronously so two joins can never share it
     const session = this.nextSession++;
     void this.ctx.storage.put('nextSession', this.nextSession);
+    const reconnectToken = newToken();
     ws.serializeAttachment({
       joined: true,
       room: attachmentOf(ws).room,
       playerId,
       nickname,
       session,
+      token: reconnectToken,
     } satisfies Attachment);
     const seed = await this.seed();
     this.seedCache = seed;
@@ -240,7 +290,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     this.kvSync()?.update(others.length + 1);
     // the board comes from the game state (seeded board once BE-36 lands), never a fixed sample
     const grid = this.state?.grid ?? createInitialState(seed, [playerId]).grid;
-    send(ws, { v, t: 'welcome', playerId, seed, grid });
+    send(ws, { v, t: 'welcome', playerId, seed, grid, token: reconnectToken });
     for (const p of others) {
       send(ws, { v, t: 'event', kind: 'playerJoined', playerId: p.playerId, nickname: p.nickname });
     }
@@ -249,6 +299,122 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     else if (this.waiting) send(ws, this.rematchStatus());
     else this.replayEndScreen(ws);
     this.startLoop();
+  }
+
+  /**
+   * BE-44: `join` with a reconnect token. The token must belong to a player whose slot is held (the socket
+   * dropped less than 15 s ago), or to a socket that is still connected (the client noticed the drop before
+   * the server did: the old socket is closed and the new one takes over). Then the new socket gets that
+   * player's slot, id and game state back, a new token, and the same `welcome` / roster / end screen a joiner
+   * gets. Nobody else is told anything: to them the player never left. Anything else is INVALID_TOKEN and the
+   * socket is closed, so a client falls back to a normal join.
+   */
+  private async resume(ws: WebSocket, token: string): Promise<void> {
+    const room = attachmentOf(ws).room;
+    // first retire the holds that ran out, even if their alarm is late: a token is never honoured past 15 s
+    await this.expireHeld(Date.now());
+    let seat: Seat | undefined = this.held.claim(token, Date.now());
+    // a takeover is not a drop: the player never left, so what hangs on the socket (the rematch press) stays
+    let ready = false;
+    if (!seat) {
+      const old = this.players().find((p) => sameToken(p.token, token));
+      if (old) {
+        ready = old.ready;
+        old.ws.serializeAttachment({ joined: false, room } satisfies Attachment);
+        this.queue.remove(old.playerId);
+        old.ws.close(CLOSE_REPLACED, 'REPLACED');
+        seat = old;
+      }
+    }
+    if (!seat) {
+      this.sendError(ws, 'INVALID_TOKEN');
+      ws.close(CLOSE_INVALID_TOKEN, 'INVALID_TOKEN');
+      return;
+    }
+    const { playerId, nickname, session } = seat;
+    const reconnectToken = newToken();
+    ws.serializeAttachment({
+      joined: true,
+      room,
+      playerId,
+      nickname,
+      session,
+      token: reconnectToken,
+      ...(ready ? { ready } : {}),
+    } satisfies Attachment);
+    this.saveHeld();
+    await this.rearmAlarm();
+    const seed = await this.seed();
+    this.seedCache = seed;
+    this.room = room;
+    const grid = this.state?.grid ?? createInitialState(seed, [playerId]).grid;
+    send(ws, { v, t: 'welcome', playerId, seed, grid, token: reconnectToken });
+    for (const p of this.seats()) {
+      if (p.playerId === playerId) continue;
+      send(ws, { v, t: 'event', kind: 'playerJoined', playerId: p.playerId, nickname: p.nickname });
+    }
+    if (this.waiting) send(ws, this.rematchStatus());
+    else this.replayEndScreen(ws);
+    this.startLoop();
+  }
+
+  /**
+   * The socket of a joined player dropped: their character stays in the game with no input and the slot is
+   * held for 15 s (stored, with the alarm re-armed by the caller). Returns false when there is nothing to
+   * hold (never joined, or no token), and the caller treats it as a normal leave.
+   */
+  private hold(ws: WebSocket): boolean {
+    const a = attachmentOf(ws);
+    if (!a.joined || a.token === undefined) return false;
+    ws.serializeAttachment({ joined: false, room: a.room } satisfies Attachment);
+    this.queue.remove(a.playerId);
+    this.held.add({
+      playerId: a.playerId,
+      nickname: a.nickname,
+      session: a.session,
+      token: a.token,
+      room: a.room,
+      expiresAt: Date.now() + RECONNECT_HOLD_MS,
+    });
+    this.saveHeld();
+    this.room = a.room;
+    // the room is not empty: the tick keeps running so the dropped character stays part of the game
+    return true;
+  }
+
+  /** Retires every hold whose 15 s are up: the player is out for good. Returns how many. */
+  private async expireHeld(now: number): Promise<number> {
+    const gone = this.held.expire(now);
+    if (gone.length === 0) return 0;
+    this.saveHeld();
+    for (const slot of gone) this.vacate(slot.playerId, slot.room);
+    await this.rearmAlarm();
+    await this.rematchAfterLeave();
+    return gone.length;
+  }
+
+  private saveHeld(): void {
+    void this.ctx.storage.put('held', this.held.list()).catch(logFailure('held-save'));
+  }
+
+  /**
+   * One DO alarm for everything that has a deadline: the earliest hold expiry and the rematch countdown.
+   * No deadline at all = no alarm, so an empty room never has one.
+   */
+  private async rearmAlarm(): Promise<void> {
+    const due = [this.rematchDeadline, this.held.nextExpiry() ?? 0].filter((t) => t > 0);
+    if (due.length === 0) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Math.min(...due));
+  }
+
+  /** Sets (or with 0 clears) the rematch countdown. Stored: the alarm alone can no longer tell it from a hold. */
+  private setRematchDeadline(deadline: number): void {
+    this.rematchDeadline = deadline;
+    const write =
+      deadline === 0
+        ? this.ctx.storage.delete('rematchDeadline')
+        : this.ctx.storage.put('rematchDeadline', deadline);
+    void write.catch(logFailure('rematch-deadline-save'));
   }
 
   /**
@@ -274,21 +440,29 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     const a = attachmentOf(ws);
     if (!a.joined) return false;
     ws.serializeAttachment({ joined: false, room: a.room } satisfies Attachment);
-    this.queue.remove(a.playerId);
+    this.vacate(a.playerId, a.room);
+    return true;
+  }
+
+  /**
+   * A slot is given up for good (the player left, or their hold ran out): out of the game, the others are
+   * told, and the room closes down when nobody is left, connected or held.
+   */
+  private vacate(playerId: PlayerId, room: string): void {
+    this.queue.remove(playerId);
     // drop the leaver from the game state now, not on the next tick: someone who joins into the
     // same slot within one tick must start fresh (spawn, ackSeq 0), not inherit the old PlayerSim
     if (this.state) {
       this.state = {
         ...this.state,
-        players: this.state.players.filter((p) => p.id !== a.playerId),
+        players: this.state.players.filter((p) => p.id !== playerId),
       };
     }
-    this.broadcast({ v, t: 'event', kind: 'playerLeft', playerId: a.playerId }, ws);
-    this.room = a.room;
-    const remaining = this.players().length;
+    this.broadcast({ v, t: 'event', kind: 'playerLeft', playerId });
+    this.room = room;
+    const remaining = this.seats().length;
     this.kvSync()?.update(remaining);
     if (remaining === 0) this.stopLoop();
-    return true;
   }
 
   /** KV lobby sync for this room (fire-and-forget: never awaited, so it cannot slow a join or a tick). */
@@ -331,13 +505,16 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       await txn.delete('roundEnd');
       await txn.delete('waiting');
     });
-    await this.ctx.storage.deleteAlarm();
+    this.setRematchDeadline(0);
+    await this.rearmAlarm();
     const players = this.players();
     if (players.length === 0) return;
+    // dropped players (BE-44) are still in the game: the new round has their characters too
+    const seats = this.seats();
     const { state, events } = newRound(
       seed,
-      players.map((p) => p.playerId),
-      sessionsOf(players),
+      seats.map((p) => p.playerId),
+      sessionsOf(seats),
     );
     this.seedCache = state.seed;
     this.state = state;
@@ -363,8 +540,8 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (this.everyoneReady()) return this.startRematch();
     if (this.waiting) return this.broadcast(this.rematchStatus());
     if (this.rematchDeadline === 0) {
-      this.rematchDeadline = Date.now() + REMATCH_WINDOW_MS;
-      await this.ctx.storage.setAlarm(this.rematchDeadline);
+      this.setRematchDeadline(Date.now() + REMATCH_WINDOW_MS);
+      await this.rearmAlarm();
     }
     this.broadcast(this.rematchStatus());
   }
@@ -393,8 +570,8 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (ready === players.length) return this.startRematch();
     if (ready === 0) {
       // the only ones who wanted a rematch are gone: no countdown until somebody presses again
-      this.rematchDeadline = 0;
-      await this.ctx.storage.deleteAlarm();
+      this.setRematchDeadline(0);
+      await this.rearmAlarm();
     }
     this.broadcast(this.rematchStatus());
   }
@@ -424,7 +601,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   }
 
   private clearReady(players: readonly Player[]): void {
-    this.rematchDeadline = 0;
+    this.setRematchDeadline(0);
     for (const p of players) {
       const a = attachmentOf(p.ws);
       if (a.joined && a.ready)
@@ -442,23 +619,24 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
    */
   private async recoverRound(): Promise<void> {
     const players = this.players();
+    const seats = this.seats();
     const seed = this.seedCache ?? 0;
     const { state, events } = newRound(
       seed,
-      players.map((p) => p.playerId),
-      sessionsOf(players),
+      seats.map((p) => p.playerId),
+      sessionsOf(seats),
     );
     const ended = await this.ctx.storage.get<RoundEndEvent>('roundEnd');
     if (ended) {
       this.state = { ...state, result: { winner: ended.winner, reason: ended.reason } };
       this.roundEnd = ended;
-      this.rematchDeadline = (await this.ctx.storage.getAlarm()) ?? 0;
+      // `rematchDeadline` was read from storage in the constructor; the alarm may be a hold's now
       return;
     }
     this.state = state;
     this.roundStartedAt = Date.now();
     this.clearReady(players);
-    await this.ctx.storage.deleteAlarm();
+    await this.rearmAlarm();
     for (const e of events) this.broadcast(e);
   }
 
@@ -493,18 +671,20 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   private forgetEndScreen(): void {
     if (this.roundEnd === undefined && this.rematchDeadline === 0) return;
     this.roundEnd = undefined;
-    this.rematchDeadline = 0;
-    void this.ctx.storage.deleteAlarm().catch(logFailure('rematch-alarm-delete'));
+    this.setRematchDeadline(0);
+    void this.rearmAlarm().catch(logFailure('rematch-alarm-delete'));
     void this.ctx.storage.delete('roundEnd').catch(logFailure('round-end-delete'));
   }
 
   private tick(): void {
     const players = this.players();
-    if (players.length === 0 || this.seedCache === undefined) {
+    const seats = this.seats();
+    // dropped players (BE-44) keep the room, and so the loop, alive until their 15 s are up
+    if (seats.length === 0 || this.seedCache === undefined) {
       this.stopLoop();
       return;
     }
-    this.kvSync()?.heartbeat(players.length);
+    this.kvSync()?.heartbeat(seats.length);
     if (this.waiting) {
       this.queue.drain(); // nothing moves before the first round
       return;
@@ -513,13 +693,13 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     try {
       // the round on the board starts being played now (first tick of a room / of a round nobody announced)
       if (this.roundStartedAt === 0 && !this.state?.result) this.roundStartedAt = Date.now();
-      const { state, events } = simulate(this.syncPlayers(players), this.queue.drain());
+      const { state, events } = simulate(this.syncPlayers(seats), this.drainInputs());
       this.state = state;
       for (const e of events) this.broadcast(e);
       const end = events.find((e): e is RoundEndEvent => e.kind === 'roundEnd');
       if (end) {
         this.rememberEndScreen(end);
-        this.recordMatch(end, state, players);
+        this.recordMatch(end, state, seats);
       }
       for (const p of players) send(p.ws, toSnapshot(state, p.playerId));
     } catch (error) {
@@ -538,7 +718,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
    * slow, batch rejected) is logged and the game goes on; the result is simply lost, as D12 accepts.
    * Never throws: a bug in building the record must not cost the room its tick.
    */
-  private recordMatch(end: RoundEndEvent, state: GameState, players: readonly Player[]): void {
+  private recordMatch(end: RoundEndEvent, state: GameState, players: readonly Seat[]): void {
     const startedAt = this.roundStartedAt;
     this.roundStartedAt = 0; // the next round (startRound) sets it again
     try {
@@ -559,7 +739,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   }
 
   /** Game state follows the sockets: new first tick, a late joiner or a leaver all land here. */
-  private syncPlayers(players: Player[]): GameState {
+  private syncPlayers(players: readonly Seat[]): GameState {
     const ids = players.map((p) => p.playerId);
     const sessions = sessionsOf(players);
     const seed = this.seedCache ?? 0;
@@ -575,6 +755,17 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       .filter((id) => !keptIds.has(id))
       .flatMap((id) => createInitialState(seed, [id], sessions).players);
     return { ...state, players: [...kept, ...added].sort((a, b) => a.id.localeCompare(b.id)) };
+  }
+
+  /**
+   * This tick's inputs. A dropped player (BE-44) gets "stand still, no bomb": without it `simulate` would
+   * keep walking them in their last direction (D27: no input keeps the old direction).
+   */
+  private drainInputs() {
+    const inputs = this.queue.drain();
+    for (const slot of this.held.list())
+      inputs.set(slot.playerId, { dir: 'none', bomb: false, seq: 0 });
+    return inputs;
   }
 
   private logStats(msg: string): void {
@@ -608,7 +799,10 @@ const logFailure =
   (error: unknown) =>
     console.error(JSON.stringify({ msg, ...extra, error: String(error) }));
 
-const sessionsOf = (players: readonly Player[]) =>
+/** The client's own `close(1000)` (WsTransport) or a close with no code (1005): leaving on purpose, nothing to hold. */
+const leftOnPurpose = (code: number): boolean => code === 1000 || code === 1005;
+
+const sessionsOf = (players: readonly Seat[]) =>
   new Map(players.map((p) => [p.playerId, p.session] as const));
 
 export function attachmentOf(ws: WebSocket): Attachment {

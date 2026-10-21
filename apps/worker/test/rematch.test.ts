@@ -1,7 +1,7 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import type { ServerMessage } from '@booberman/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GameState } from '../src/game';
 import { REMATCH_WINDOW_MS, type RoomDO } from '../src/room/RoomDO';
 import { begin, type Client, connect, isEvent, join, v } from './helpers';
@@ -16,6 +16,12 @@ const status = (m: ServerMessage): m is Event<'rematchStatus'> =>
   m.t === 'event' && m.kind === 'rematchStatus';
 const kill = (m: ServerMessage): m is Event<'kill'> => m.t === 'event' && m.kind === 'kill';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** BE-44: the alarm only starts a rematch once its countdown is over, so a test that fires it moves the clock first. */
+const countdownOver = () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(Date.now() + REMATCH_WINDOW_MS);
+};
+afterEach(() => vi.useRealTimers());
 const count = (c: Client, pred: (m: ServerMessage) => boolean) => c.received.filter(pred).length;
 /** Waits for the next status that is not one this client has already seen. */
 const nextStatus = async (c: Client, seen: number) => {
@@ -165,6 +171,7 @@ describe('rematch (D9)', () => {
     await sleep(300);
     expect(count(a, roundStart) + count(b, roundStart)).toBe(0);
 
+    countdownOver();
     expect(await runDurableObjectAlarm(stubFor('rematch3'))).toBe(true); // the 15 s are up
     const start = await a.next(roundStart);
     expect(await b.next(roundStart)).toEqual(start);
@@ -434,6 +441,7 @@ describe('a restart of the DO in the middle of all this (hibernation, deploy)', 
     expect(await c.next(roundEnd)).toMatchObject({ winner: null, reason: 'timeout' });
     expect(await c.next(status)).toMatchObject({ ready: ['p1'], deadline: first.deadline });
 
+    countdownOver();
     expect(await runDurableObjectAlarm(stubFor('wake1'))).toBe(true);
     await a.next(roundStart);
     await b.next(roundStart);
