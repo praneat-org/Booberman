@@ -114,14 +114,27 @@ describe('ghost walking', () => {
     expect([get(s, 'p1').x, get(s, 'p1').y]).toEqual([5, 0]);
   });
 
-  it('never leaves the rim: stops before the corner, turns the other way along the side', () => {
+  it('turns a corner without standing on it (Hi, 21 Oct): one hop to the next side, then stops', () => {
     let s = idle(ghostArena(), 80, inputs({ p1: input('left') }));
-    expect([get(s, 'p1').x, get(s, 'p1').y]).toEqual([1, 0]);
-    s = idle(s, 20, inputs({ p1: input('up') }));
-    expect([get(s, 'p1').x, get(s, 'p1').y]).toEqual([1, 0]);
+    // (1,0) -> corner (0,0) is skipped -> (0,1); holding left there goes nowhere
+    expect([get(s, 'p1').x, get(s, 'p1').y]).toEqual([0, 1]);
     s = idle(s, 20, inputs({ p1: input('right') }));
-    expect(get(s, 'p1').x).toBeGreaterThan(1);
-    expect(get(s, 'p1').y).toBe(0);
+    expect([get(s, 'p1').x, get(s, 'p1').y]).toEqual([0, 1]);
+    s = idle(s, 1, inputs({ p1: input('down') }));
+    expect([get(s, 'p1').x, get(s, 'p1').y]).toEqual([0, 2]);
+    // and back round the same corner
+    s = idle(s, 40, inputs({ p1: input('up') }));
+    expect([get(s, 'p1').x, get(s, 'p1').y]).toEqual([1, 0]);
+  });
+
+  it('never stands on a corner or leaves the rim, whatever is held', () => {
+    let s = ghostArena();
+    for (const dir of ['left', 'down', 'right', 'up', 'left', 'down'] as const) {
+      for (let i = 0; i < 60; i++) {
+        s = idle(s, 1, inputs({ p1: input(dir) }));
+        expect(isGhostTile(get(s, 'p1').x, get(s, 'p1').y)).toBe(true);
+      }
+    }
   });
 
   it('keeps walking the held direction without new input (D27) and stops on none', () => {

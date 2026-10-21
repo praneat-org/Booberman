@@ -16,6 +16,28 @@ export const isGhostTile = (x: number, y: number): boolean => {
   return onX !== onY && x >= 0 && x <= LAST_X && y >= 0 && y <= LAST_Y;
 };
 
+/**
+ * Where a ghost on (x, y) goes when it walks one step (dx, dy): the next rim tile, or round a
+ * corner in one hop to the first tile of the next side (ghosts never stand on a corner, Hi 21 Oct).
+ * `undefined` = the step leaves the rim (into the board or off it).
+ */
+export function rimStep(
+  x: number,
+  y: number,
+  dx: number,
+  dy: number,
+): readonly [number, number] | undefined {
+  const nx = x + dx;
+  const ny = y + dy;
+  if (isGhostTile(nx, ny)) return [nx, ny];
+  const corner = (nx === 0 || nx === LAST_X) && (ny === 0 || ny === LAST_Y);
+  if (!corner || (dx === 0 && dy === 0)) return undefined;
+  // the corner's two rim neighbours: one is where we stand, the other is the way round
+  const sideX = [nx + (nx === 0 ? 1 : -1), ny] as const;
+  const sideY = [nx, ny + (ny === 0 ? 1 : -1)] as const;
+  return sideX[0] === x && sideX[1] === y ? sideY : sideX;
+}
+
 /** Ring tile closest to (x, y); ties go to the first in row-major order (deterministic). */
 export function nearestRimTile(x: number, y: number): readonly [number, number] {
   let best: readonly [number, number] = [1, 0];
@@ -76,7 +98,7 @@ function landingTile(
 
 /**
  * One tick of every ghost, in id order: cool down, walk along the rim (one tile per
- * `ghostWalkTicksPerTile` while a direction is held; never off the rim, never into a corner), and
+ * `ghostWalkTicksPerTile` while a direction is held; never off the rim; a corner is skipped in one hop, `rimStep`), and
  * on a bomb input with the cooldown over throw a bomb at the survivor-nearest free tile. No
  * survivor or no free tile in range = no throw and the cooldown is kept. Ghosts never block anyone.
  */
@@ -97,9 +119,9 @@ export function stepGhosts(
     let { x, y } = p;
     const held = inputs.get(p.id)?.dir ?? p.heldDir;
     const [dx, dy] = VECTORS[held];
-    if (moveCd === 0 && isGhostTile(x + dx, y + dy)) {
-      x += dx;
-      y += dy;
+    const to = moveCd === 0 ? rimStep(x, y, dx, dy) : undefined;
+    if (to) {
+      [x, y] = to;
       moveCd = cfg.ghostWalkTicksPerTile;
     }
     const me = { ...p, x, y };
