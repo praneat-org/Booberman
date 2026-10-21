@@ -257,6 +257,40 @@ describe('credit goes to the kicker', () => {
     ]);
   });
 
+  it("a kicked ghost's bomb stays the ghost's: cause ghost, not kick (D35 order)", () => {
+    // same corridor, but p2's bomb is a ghost bomb (radius 1): it stops at x = 5 and burns 4..6
+    const s = withKick(
+      board(['#A....C.B#'], { bombs: [{ ...bomb(2, 1, 'p2', 8), kind: 'ghost' }] }),
+      'p1',
+    );
+    const { state, events } = kickAndWatch(s, 'right', 8);
+    expect(get(state, 'p3').alive).toBe(false);
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'kill', killer: 'p2', victim: 'p3', cause: 'ghost' }),
+    );
+    expect(get(state, 'p1').stats.kickKills).toBe(0);
+  });
+
+  it("a kicked ghost's bomb set off by someone else's fire is theirs (chain rule, D29)", () => {
+    // p3's bomb (x = 2, radius 2) burns 1..4 and sets off the ghost bomb on 4 (kicked by p1,
+    // placed by p2), whose radius-1 fire reaches p4 on 5: the credit is the fire's, p3 `bomb`
+    const s = board(['#....DCAB#'], {
+      bombs: [
+        bomb(2, 1, 'p3', 1),
+        {
+          ...bomb(4, 1, 'p2', 50),
+          kind: 'ghost',
+          kickedBy: { id: 'p1', session: 1 },
+        },
+      ],
+    });
+    const { state, events } = simulate(s, new Map(), CFG);
+    expect(get(state, 'p4').alive).toBe(false);
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'kill', killer: 'p3', victim: 'p4', cause: 'bomb' }),
+    );
+  });
+
   it('a normal bomb is still credited to its owner as `bomb`', () => {
     const s = board(['#A.B#'], { bombs: [bomb(2, 1, 'p1', 1)] });
     const { events } = simulate(s, new Map(), CFG);

@@ -106,6 +106,10 @@ export const PlayerState = z.object({
   curse: z.number().int().min(0),
   /** Place immediately instead of interpolating (e.g. became a ghost). */
   teleport: z.boolean(),
+  /** Dead players play on as ghosts on the rim (CAR-3802); only sent when true. */
+  ghost: z.boolean().optional(),
+  /** Ghosts only: ticks until they can throw a bomb (0 = ready). 20 ticks = 1 s. */
+  throwCooldown: z.number().int().min(0).optional(),
   /** BE-45: holds the kick item (until death). Sent only when true; absent = false. */
   kick: z.boolean().optional(),
 });
@@ -114,6 +118,8 @@ export const BombState = z.object({
   x: TileX,
   y: TileY,
   fuse: z.number().int().min(0),
+  /** Lobbed by a ghost: draw it small (CAR-3802); only sent when true. */
+  ghost: z.boolean().optional(),
   /**
    * BE-45: the bomb is sliding after a kick, in this direction. Sent only while it slides. `x` / `y`
    * stay whole tiles (D16): a sliding bomb hops one tile every 2 ticks, so the client tweens

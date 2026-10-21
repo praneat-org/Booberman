@@ -1,11 +1,15 @@
 import type Phaser from 'phaser';
-import { cardRect, fitText, type HudCard, type HudView } from '../view/hudView';
+import { cardRect, fitText, type HudCard, type HudView, statusLabel } from '../view/hudView';
 import { CANVAS_WIDTH_PX } from '../view/layout';
 import { CURSE_COLOR } from './CurseFrames';
 
 const FONT = { fontFamily: 'monospace', fontSize: '8px' };
-const STATUS_LABEL = { alive: 'ALIVE', dead: 'DEAD', cursed: 'CURSE' } as const;
-const STATUS_COLOR = { alive: '#7CFC7C', dead: '#808080', cursed: '#D58BFF' } as const;
+const STATUS_COLOR = {
+  alive: '#7CFC7C',
+  dead: '#808080',
+  cursed: '#D58BFF',
+  ghost: '#9FD8FF',
+} as const;
 const CARD_TOP = 14;
 const MAX_CARDS = 4;
 /** Card layout in px: name starts after the swatch; the status is right-aligned. */
@@ -75,10 +79,7 @@ export class Hud {
       1,
       card.status === 'cursed' ? CURSE_COLOR : card.isSelf ? 0xffffff : 0x2a2a48,
     );
-    const label =
-      card.status === 'cursed'
-        ? `${STATUS_LABEL.cursed} ${card.curseSeconds}s`
-        : STATUS_LABEL[card.status];
+    const label = statusLabel(card);
     const color = STATUS_COLOR[card.status];
     // Text.setText skips an unchanged string, but setColor repaints the canvas every call.
     if (label !== slot.shownLabel) {

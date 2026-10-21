@@ -5,6 +5,7 @@ import { resolveExplosions } from './bombs';
 import { DEFAULT_CONFIG } from './config';
 import { effectiveDir, stepCurses } from './curse';
 import { VECTORS } from './dirs';
+import { spawnGhosts, stepGhosts } from './ghost';
 import { kickBombs, slideBombs } from './kick';
 import { checkRoundEnd } from './round';
 import { summarizeRound } from './summary';
@@ -155,15 +156,18 @@ export function simulate(
   const counting = state.bombs.map((b) => ({ ...b, fuse: b.fuse - 1 }));
   const burning = state.flames.map((f) => ({ ...f, ttl: f.ttl - 1 })).filter((f) => f.ttl > 0);
 
-  const walked = state.players.map((p) => step(p, inputs.get(p.id), state.grid, bombTiles, cfg));
+  const stepped = state.players.map((p) => step(p, inputs.get(p.id), state.grid, bombTiles, cfg));
+  const ghosts = stepGhosts(stepped, inputs, state.grid, counting, cfg);
+  const walked = ghosts.players;
   const blast = resolveExplosions(
     {
       grid: state.grid,
-      // kicks and slides come after walking (positions are final) and before new bombs and blasts
+      // kicks and slides come after walking (positions are final) and the ghosts' throws (a bomb
+      // that just landed can be kicked), before new bombs and blasts
       bombs: placeBombs(
         walked,
         inputs,
-        slideBombs(walked, kickBombs(walked, counting, state.grid), state.grid, cfg),
+        slideBombs(walked, kickBombs(walked, ghosts.bombs, state.grid), state.grid, cfg),
         cfg,
       ),
       flames: burning,
@@ -176,7 +180,7 @@ export function simulate(
   const tick = state.tick + 1;
   const deaths = applyDeaths(walked, blast.flames, cfg);
   const cursed = stepCurses(deaths.players, blast.items, cfg);
-  const players = cursed.players;
+  const players = spawnGhosts(cursed.players, cfg);
   // sticky: judged on the players this tick started with, before anyone can leave again
   const contested = state.contested || state.players.length >= 2;
   const result = checkRoundEnd(players, tick, cfg, contested);
