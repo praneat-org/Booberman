@@ -1,16 +1,16 @@
 # Asset credits
 
-All art and audio must be CC0 (D11) — Kenney (https://kenney.nl/assets) preferred. Never use sprites ripped from other games.
+Audio is CC0 (Kenney). The sprite sheet is NOT free to use: it is ripped from NES Bomberman (Hudson Soft)
+and is here for internal testing only, overriding D11 for this build. Do not ship it in a public release;
+swap back to a CC0 sheet first.
 
-## Tiny Dungeon (FE-26)
+## NES Bomberman sprite sheet
 
-`public/tiles/tileset.png` is the original 203×186 tilemap from Kenney's Tiny Dungeon pack
-(https://kenney.nl/assets/tiny-dungeon), used at its native 16×16 tile size with 1px spacing.
-The game renders the source tiles directly: floor 50, wall 14, player 84, crate 63, barrel 66,
-torch frames 106–107, curse skull 19, boot 125, and player marker 60. The Phaser client uses a
-single sprite sheet so no placeholder or hand-drawn art is generated.
-
-The pack's license is included in `LICENSE-kenney-tiny-dungeon.txt`.
+`public/tiles/tileset.png` is built from "NES - Bomberman - Miscellaneous - General Sprites" (ripped by
+Black Squirrel and SuperJustinBros, https://www.spriters-resource.com/nes/bomberman/asset/7884/):
+cropped to 224×368 (14×23 cells of 16px, no spacing), both background greens made transparent, cell 13
+filled with the floor green and cell 27 replaced by a down-arrow player marker. Frame indices are in
+`src/assets/sheetFrames.ts`.
 
 ## Audio (FE-18)
 
