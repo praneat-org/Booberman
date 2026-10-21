@@ -25,6 +25,7 @@ function fakeTransport() {
     disconnect,
     send: vi.fn(),
     ping: vi.fn(),
+    rematch: vi.fn(),
     onWelcome: (cb) => track(welcome, cb),
     onSnapshot: () => () => {},
     onEvent: () => () => {},

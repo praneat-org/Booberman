@@ -28,6 +28,11 @@ export interface Transport {
   send(input: TransportInput): void;
   /** Sends `ping { ts }`; the server answers with `pong { ts }` (D7). */
   ping(ts: number): void;
+  /**
+   * D9 / D35: "play again" — we are ready. Only meaningful on the end screen; the server ignores it
+   * while a round is running and answers every press with a `rematchStatus` event. Pressing again changes nothing.
+   */
+  rematch(): void;
   onWelcome(cb: (msg: WelcomeMessage) => void): Unsubscribe;
   onSnapshot(cb: (msg: SnapshotMessage) => void): Unsubscribe;
   onEvent(cb: (msg: GameEvent) => void): Unsubscribe;

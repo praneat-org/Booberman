@@ -31,6 +31,11 @@ export class Roster {
   nameOf(id: PlayerId): string | undefined {
     return this.names.get(id);
   }
+
+  /** How many players are in the room right now. */
+  get size(): number {
+    return this.names.size;
+  }
 }
 
 const ELLIPSIS = '…';
