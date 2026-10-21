@@ -5,6 +5,12 @@ import { roomPath } from './joinTarget';
 const at = (pathname: string, search = '') => ({ pathname, search });
 
 describe('resolveEntry', () => {
+  it('shows the leaderboard for /leaderboard (trailing slash ok, nothing deeper)', () => {
+    expect(resolveEntry(at('/leaderboard'), '')).toEqual({ kind: 'leaderboard' });
+    expect(resolveEntry(at('/leaderboard/'), '')).toEqual({ kind: 'leaderboard' });
+    expect(resolveEntry(at('/leaderboard/x'), '')).toEqual({ kind: 'home' });
+  });
+
   it('shows the home screen for / and for room-less paths', () => {
     for (const p of ['/', '/room', '/room/', '/rooms/abc123', '/index.html']) {
       expect(resolveEntry(at(p), 'Mint'), p).toEqual({ kind: 'home' });
