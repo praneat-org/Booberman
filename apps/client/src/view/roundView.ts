@@ -42,12 +42,21 @@ export class RoundView {
    * table, never ours: a snapshot after `roundEnd` (a frozen board, a newcomer's spawn) does not touch it.
    */
   end: EndView | undefined;
-  /** Who pressed "play again" and the server's deadline; only shown while `end` is set. */
+  /** Who pressed "play again" (or "ready" while waiting) and the server's deadline. */
   rematch: RematchStatus | undefined;
   /** What is being drawn: the buffered snapshot at the render time, players interpolated. */
   latest: SnapshotMessage | undefined;
   playerAnims: Map<string, PlayerAnim> = new Map();
   renderTick: number | undefined;
+
+  /**
+   * BE-57: the room waits for its first round. The server says so by sending `rematchStatus` with
+   * no `roundEnd` before it; `roundStart` (reset) ends it. A late joiner into a running round gets
+   * no `rematchStatus`, so it never sees this screen.
+   */
+  get waiting(): boolean {
+    return this.rematch !== undefined && this.end === undefined;
+  }
 
   constructor(delayMs: number = DEFAULT_INTERPOLATION_DELAY_MS) {
     this.buffer = new SnapshotBuffer({ delayMs });

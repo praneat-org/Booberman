@@ -36,6 +36,11 @@ export class Roster {
   get size(): number {
     return this.names.size;
   }
+
+  /** Everyone in the room, by player id. */
+  ids(): PlayerId[] {
+    return [...this.names.keys()].sort() as PlayerId[];
+  }
 }
 
 const ELLIPSIS = '…';

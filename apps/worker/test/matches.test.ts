@@ -4,7 +4,7 @@ import type { ServerMessage } from '@booberman/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GameState } from '../src/game';
 import type { RoomDO } from '../src/room/RoomDO';
-import { type Client, join, v } from './helpers';
+import { begin, type Client, join, v } from './helpers';
 
 type Event<K extends string> = Extract<ServerMessage, { t: 'event'; kind: K }>;
 const roundEnd = (m: ServerMessage): m is Event<'roundEnd'> =>
@@ -37,6 +37,7 @@ const bombNextToP2: Partial<GameState> = {
 const twoPlayers = async (room: string, nickA = 'A', nickB = 'B') => {
   const a = await join(room, nickA);
   const b = await join(room, nickB);
+  await begin(room, a, b);
   await b.next((m) => m.t === 'snapshot' && m.players.length === 2);
   return [a, b] as const;
 };

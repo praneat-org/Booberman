@@ -9,6 +9,9 @@ import {
   rematchButtonLocked,
   rematchCountdownText,
   rematchStatusText,
+  WAITING_BUTTON_LABEL,
+  type WaitingRow,
+  waitingStatusText,
 } from '../view/endView';
 import { cssColor } from '../view/killFeed';
 
@@ -44,6 +47,8 @@ const STYLE = `
 .bb-end-btn{min-height:48px;padding:8px 16px;font:inherit;font-weight:700;color:#1b1b2f;background:#ffd84d;
   border:0;border-radius:6px;cursor:pointer;touch-action:manipulation}
 .bb-end-btn:disabled{opacity:.6;cursor:default}
+.bb-end-ready{margin-left:auto;padding-left:8px;font-size:13px;white-space:nowrap;color:#9aa0c8}
+.bb-end-ready.bb-on{color:#7fe08a;font-weight:700}
 .bb-end-btn:focus-visible{outline:3px solid #7fd1ff;outline-offset:2px}
 `;
 
@@ -70,6 +75,8 @@ export class EndOverlay {
   private readonly button = el('button', 'bb-end-btn', REMATCH_BUTTON_LABEL);
   /** The `EndView` the screen was built from; a new one (new round ended) rebuilds it. */
   private built: EndView | undefined;
+  /** BE-57: the waiting room list as last drawn (`undefined` = not showing the waiting room). */
+  private builtWaiting: string | undefined;
   /** When we pressed, until the server's `rematchStatus` says we are ready (see `rematchButtonLocked`). */
   private pressedAt: number | undefined;
   private shownStatus = '';
@@ -113,6 +120,17 @@ export class EndOverlay {
     if (rematch) this.paintRematch(rematch, nowMs);
   }
 
+  /**
+   * BE-57: the room waits for its first round. Same card and button as the end screen: who is in,
+   * who pressed "ready", and the rule (two or more players, everyone ready; no countdown).
+   */
+  syncWaiting(rows: readonly WaitingRow[], rematch: RematchView, nowMs: number): void {
+    const key = JSON.stringify(rows);
+    if (key !== this.builtWaiting) this.buildWaiting(rows, key);
+    this.root.hidden = false;
+    this.paintRematch(rematch, nowMs, waitingStatusText(rematch), WAITING_BUTTON_LABEL);
+  }
+
   destroy(): void {
     this.root.remove();
   }
@@ -128,6 +146,7 @@ export class EndOverlay {
   private hide(): void {
     this.root.hidden = true;
     this.built = undefined;
+    this.builtWaiting = undefined;
     this.pressedAt = undefined;
     this.body.replaceChildren();
     this.status.textContent = '';
@@ -140,8 +159,40 @@ export class EndOverlay {
     this.shownLocked = false;
   }
 
+  private buildWaiting(rows: readonly WaitingRow[], key: string): void {
+    // a new screen (not a list update): give the button back like `hide` does
+    if (this.builtWaiting === undefined) this.hide();
+    this.builtWaiting = key;
+    const head = el('h2', 'bb-end-head', 'รอผู้เล่น');
+    head.dataset.testid = 'waiting-headline';
+    this.root.setAttribute('aria-label', 'ห้องรอ');
+    const list = el('ul', 'bb-end-titles');
+    list.style.marginTop = '12px';
+    list.dataset.testid = 'waiting-players';
+    for (const row of rows) {
+      const li = el('li');
+      li.style.display = 'flex';
+      li.dataset.player = row.id;
+      const swatch = el('span', 'bb-end-swatch');
+      swatch.style.background = cssColor(row.color);
+      li.append(swatch, row.name);
+      if (row.isSelf) li.append(el('span', 'bb-end-you', 'คุณ'));
+      li.append(
+        el(
+          'span',
+          row.ready ? 'bb-end-ready bb-on' : 'bb-end-ready',
+          row.ready ? 'พร้อม' : 'ยังไม่พร้อม',
+        ),
+      );
+      list.append(li);
+    }
+    this.body.replaceChildren(head, list);
+  }
+
   private build(end: EndView): void {
     this.built = end;
+    this.builtWaiting = undefined;
+    this.root.setAttribute('aria-label', 'สรุปรอบนี้');
     this.pressedAt = undefined;
     const head = el('h2', end.youWon ? 'bb-end-head bb-win' : 'bb-end-head', end.headline);
     head.dataset.testid = 'end-headline';
@@ -204,8 +255,12 @@ export class EndOverlay {
   }
 
   /** Writes only what changed: this runs every frame while the screen is up. */
-  private paintRematch(v: RematchView, nowMs: number): void {
-    const status = rematchStatusText(v);
+  private paintRematch(
+    v: RematchView,
+    nowMs: number,
+    status = rematchStatusText(v),
+    label = REMATCH_BUTTON_LABEL,
+  ): void {
     if (status !== this.shownStatus) {
       this.shownStatus = status;
       this.status.textContent = status;
@@ -216,7 +271,7 @@ export class EndOverlay {
       this.count.textContent = count ?? '';
     }
     const locked = rematchButtonLocked(v.selfReady, this.pressedAt, nowMs);
-    this.lock(locked, locked ? REMATCH_WAITING_LABEL : REMATCH_BUTTON_LABEL);
+    this.lock(locked, locked ? REMATCH_WAITING_LABEL : label);
   }
 
   private lock(locked: boolean, label: string): void {

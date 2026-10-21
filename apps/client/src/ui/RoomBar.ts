@@ -9,7 +9,7 @@ import {
 } from '../lobby/shareLink';
 
 const STYLE = `
-.bb-roombar{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;
+.bb-roombar{position:relative;z-index:16;flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;
   height:60px;padding:6px max(60px,calc(env(safe-area-inset-right) + 52px)) 6px max(12px,env(safe-area-inset-left));
   background:#262645;border-bottom:2px solid #4a4a7a;color:#fff;box-sizing:border-box;
   font:14px/1.3 system-ui,'Noto Sans Thai','Sarabun',sans-serif}
