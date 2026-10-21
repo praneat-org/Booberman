@@ -23,7 +23,12 @@ export interface CloseInfo {
  * Subscribe before `connect()`; each `on*` returns an unsubscribe function for scene shutdown.
  */
 export interface Transport {
+  /**
+   * Opens the connection. After `onClose` it may be called again (FE-22): the real transport then asks for
+   * its old slot back with the token of the last `welcome`, and answers `onWelcome` again when it got it.
+   */
   connect(): void;
+  /** Leaves for good; also forgets the reconnect token. */
   disconnect(): void;
   send(input: TransportInput): void;
   /** Sends `ping { ts }`; the server answers with `pong { ts }` (D7). */

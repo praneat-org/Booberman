@@ -8,11 +8,13 @@ import { toSoundPort } from '../audio/phaserSound';
 import { joinFromLocation } from '../lobby/joinTarget';
 import { createTransport, transportKind } from '../net/createTransport';
 import { type JoinFailureKind, JoinWatcher } from '../net/joinWatcher';
+import { Reconnector } from '../net/reconnector';
 import type { Unsubscribe } from '../net/Transport';
 import { CurseFrames } from '../ui/CurseFrames';
 import { attachDebugOverlay } from '../ui/DebugOverlay';
 import { EndOverlay } from '../ui/EndOverlay';
 import { KillFeedOverlay } from '../ui/KillFeedOverlay';
+import { ReconnectOverlay } from '../ui/ReconnectOverlay';
 import { RoomBar } from '../ui/RoomBar';
 import { browserTouchEnv, TouchControls } from '../ui/TouchControls';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
@@ -142,6 +144,8 @@ export class GameScene extends Phaser.Scene {
         // the server never announces us to ourselves: our card's name is the one we joined with
         applyWelcome(msg, this.round, join.nickname);
         this.destroyRoundSprites();
+        // also after a reconnect: the new socket starts with nothing held
+        this.sender?.resync();
       }),
       transport.onSnapshot((msg) => this.round.applySnapshot(msg, performance.now())),
       transport.onEvent((msg) => {
@@ -251,7 +255,9 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * The real server only: show the room bar (copy / share link) and turn "did the join work?" into
-   * either the bar's button or a trip back to the lobby with the reason. `?mock=1` has no room.
+   * either the bar's button or a trip back to the lobby with the reason. Once in, a dropped connection
+   * is won back with the reconnect token under a "reconnecting" overlay (FE-22), and only a hopeless one
+   * (15 s up, or the server says no) goes back to the lobby. `?mock=1` has no room.
    */
   private watchJoin(
     transport: NonNullable<ReturnType<typeof createTransport>>,
@@ -266,12 +272,30 @@ export class GameScene extends Phaser.Scene {
       const failure = { kind, roomId: join.roomId, nickname: join.nickname };
       this.scene.start(SceneKey.Lobby, { failure } satisfies LobbySceneData);
     };
-    const watcher = new JoinWatcher(transport, {
-      onJoined: () => bar?.setJoined(true),
-      onFailed: leave,
-      onLost: () => leave('CONNECTION_LOST'),
+    const overlay = new ReconnectOverlay(host ?? document.body);
+    const reconnector = new Reconnector(transport, {
+      onReconnecting: (deadline) => overlay.show(deadline),
+      onRestored: () => overlay.hide(),
+      onGaveUp: (kind) => {
+        overlay.hide();
+        leave(kind);
+      },
     });
-    return [() => watcher.dispose(), () => bar?.destroy()];
+    const watcher = new JoinWatcher(transport, {
+      onJoined: () => {
+        bar?.setJoined(true);
+        reconnector.arm();
+      },
+      onFailed: leave,
+      // a connection lost after joining is the Reconnector's: it retries, and leaves when that is hopeless
+      onLost: () => {},
+    });
+    return [
+      () => watcher.dispose(),
+      () => reconnector.dispose(),
+      () => overlay.destroy(),
+      () => bar?.destroy(),
+    ];
   }
 
   /**

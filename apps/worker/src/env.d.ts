@@ -15,6 +15,8 @@ declare namespace Cloudflare {
     DB: D1Database;
     /** Rate limit for POST /api/rooms, keyed by client IP. */
     ROOM_CREATE_LIMITER: RateLimit;
+    /** Rate limit for GET /api/leaderboard cache misses (the D1 query), keyed by client IP. */
+    LEADERBOARD_LIMITER: RateLimit;
   }
   interface GlobalProps {
     mainModule: typeof import('./index');

@@ -58,7 +58,7 @@ export function noticeFor(
     case 'CONNECT_FAILED':
       return {
         title: 'เชื่อมต่อไม่สำเร็จ',
-        message: `เข้า${room}ไม่ได้ ตรวจอินเทอร์เน็ตแล้วลองอีกครั้ง`,
+        message: `เข้า${room} ไม่ได้ ตรวจอินเทอร์เน็ตแล้วลองอีกครั้ง`,
         actions: actions({ id: 'retry', label: 'ลองอีกครั้ง', primary: false }, HOME),
       };
     case 'VERSION_MISMATCH':
@@ -70,7 +70,7 @@ export function noticeFor(
     case 'CONNECTION_LOST':
       return {
         title: 'หลุดจากห้องแล้ว',
-        message: `การเชื่อมต่อกับ${room}ขาดไป เข้าห้องอีกครั้งได้เลย`,
+        message: `การเชื่อมต่อกับ${room} ขาดไปและต่อกลับไม่ได้ เข้าห้องอีกครั้งได้เลย`,
         actions: actions({ id: 'retry', label: 'เข้าห้องอีกครั้ง', primary: false }, HOME),
       };
   }

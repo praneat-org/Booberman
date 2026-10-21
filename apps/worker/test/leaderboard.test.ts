@@ -6,7 +6,7 @@ import {
   type LeaderboardResponse,
 } from '@booberman/protocol';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { leaderboardSql } from '../src/api/leaderboard';
+import { leaderboard, leaderboardSql } from '../src/api/leaderboard';
 
 const get = (qs: string) => exports.default.fetch(`http://localhost${LEADERBOARD_PATH}${qs}`);
 const body = async (qs: string): Promise<LeaderboardResponse> => (await get(qs)).json();
@@ -103,6 +103,46 @@ describe('GET /api/leaderboard', () => {
       return res;
     });
     expect((await second.json<LeaderboardResponse>()).entries[0]?.value).toBe(1);
+  });
+});
+
+describe('rate limit (LEADERBOARD_LIMITER)', () => {
+  const ctx = { waitUntil: () => {} };
+  const denied = {
+    DB: env.DB,
+    LEADERBOARD_LIMITER: { limit: async () => ({ success: false }) } as unknown as RateLimit,
+  };
+  const url = `http://localhost${LEADERBOARD_PATH}?by=wins`;
+
+  it('a cache MISS over the limit -> 429 RATE_LIMITED + Retry-After, D1 not queried', async () => {
+    const res = await leaderboard(new Request(url), { ...denied, DB: {} as D1Database }, ctx);
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: LeaderboardApiErrorCode.enum.RATE_LIMITED });
+    expect(res.headers.get('Retry-After')).toBe('60');
+  });
+
+  it('a cache HIT is served even when the limiter says no', async () => {
+    await seed(['Ann', 1, 0, 1]);
+    await (await get('?by=wins')).arrayBuffer();
+    await vi.waitFor(async () => {
+      expect((await get('?by=wins')).headers.get('x-cache')).toBe('HIT');
+    });
+    const res = await leaderboard(new Request(url), denied, ctx);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-cache')).toBe('HIT');
+  });
+
+  it('a bad `by` is 400 before the limiter is touched', async () => {
+    const res = await leaderboard(
+      new Request(`http://localhost${LEADERBOARD_PATH}?by=x`),
+      denied,
+      ctx,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('the real binding lets normal use through (3 tabs in a row)', async () => {
+    for (const by of ['wins', 'kills', 'troll']) expect((await get(`?by=${by}`)).status).toBe(200);
   });
 });
 

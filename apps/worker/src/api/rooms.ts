@@ -29,7 +29,7 @@ export function generateRoomId(): string {
   return id;
 }
 
-function clientIp(request: Request): string {
+export function clientIp(request: Request): string {
   return request.headers.get('CF-Connecting-IP') ?? 'unknown';
 }
 
