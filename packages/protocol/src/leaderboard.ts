@@ -28,5 +28,5 @@ export const LeaderboardResponse = z.object({
 export type LeaderboardResponse = z.infer<typeof LeaderboardResponse>;
 
 /** `{ error }` codes of `GET /api/leaderboard` (HTTP API, separate from the WebSocket `ErrorCode`). */
-export const LeaderboardApiErrorCode = z.enum(['BAD_BY']);
+export const LeaderboardApiErrorCode = z.enum(['BAD_BY', 'RATE_LIMITED']);
 export type LeaderboardApiErrorCode = z.infer<typeof LeaderboardApiErrorCode>;

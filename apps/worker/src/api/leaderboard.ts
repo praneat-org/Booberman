@@ -5,6 +5,7 @@ import {
   type LeaderboardResponse,
 } from '@booberman/protocol';
 import { jsonError } from '../http/router';
+import { clientIp } from './rooms';
 
 export const CACHE_SECONDS = 60;
 
@@ -23,13 +24,15 @@ async function query(db: D1Database, by: LeaderboardBy): Promise<LeaderboardResp
 }
 
 /**
- * GET /api/leaderboard?by=wins|kills|troll → 200 LeaderboardResponse · 400 BAD_BY.
+ * GET /api/leaderboard?by=wins|kills|troll → 200 LeaderboardResponse · 400 BAD_BY · 429 RATE_LIMITED.
+ * Order: validate `by` -> cache lookup -> rate limit -> D1. The limiter sits after the cache on purpose: a HIT
+ * costs no D1 read so it is never counted or blocked; only a MISS (which queries D1) spends a token.
  * Cached at the edge for 60s (Cache API, key = the URL with only `by`); `x-cache: HIT|MISS` says which.
  * The Cache API is a no-op on `*.workers.dev`, so there it is always MISS (works on a custom domain).
  */
 export async function leaderboard(
   request: Request,
-  env: Pick<Cloudflare.Env, 'DB'>,
+  env: Pick<Cloudflare.Env, 'DB' | 'LEADERBOARD_LIMITER'>,
   ctx: Pick<ExecutionContext, 'waitUntil'>,
 ): Promise<Response> {
   const parsed = LeaderboardBy.safeParse(new URL(request.url).searchParams.get('by'));
@@ -43,6 +46,13 @@ export async function leaderboard(
     const res = new Response(hit.body, hit);
     res.headers.set('x-cache', 'HIT');
     return res;
+  }
+
+  const { success } = await env.LEADERBOARD_LIMITER.limit({ key: clientIp(request) });
+  if (!success) {
+    return jsonError(429, 'RATE_LIMITED' satisfies LeaderboardApiErrorCode, {
+      'Retry-After': '60',
+    });
   }
 
   const res = Response.json(await query(env.DB, by), {
