@@ -313,10 +313,12 @@ export class GameScene extends Phaser.Scene {
         .setDepth(Depth.Bomb),
     );
     for (const v of views) {
-      // One bomb frame; tint and pulse it as the fuse runs down.
+      // One bomb frame; tint and pulse it as the fuse runs down. Placed every frame: a kicked
+      // bomb glides between tiles (FE-23), its view position is not its tile.
       this.bombSprites
         .get(v.key)
-        ?.setTint(v.bright ? 0xffffff : 0x999999)
+        ?.setPosition(v.px, v.py)
+        .setTint(v.bright ? 0xffffff : 0x999999)
         .setScale(v.bright ? 1 : 0.9);
     }
   }
