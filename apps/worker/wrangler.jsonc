@@ -19,7 +19,9 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }],
   // Top level = local dev / tests (`wrangler dev`, vitest): PLACEHOLDER KV / D1 ids, never deployed.
-  // Real resources live in env.dev / env.production below (BE-26). No R2 binding yet (BE-37).
+  // Real resources live in env.dev / env.production below (BE-26). No R2 binding on purpose (BE-37): the
+  // Worker never reads the asset buckets; CI uploads to them (scripts/upload-assets.ts) and the browser loads
+  // them over their public URL.
   "kv_namespaces": [{ "binding": "ROOMS", "id": "00000000000000000000000000000000" }],
   "d1_databases": [
     {
@@ -34,6 +36,11 @@
       "name": "ROOM_CREATE_LIMITER",
       "namespace_id": "1001",
       "simple": { "limit": 5, "period": 60 }
+    },
+    {
+      "name": "LEADERBOARD_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 30, "period": 60 }
     }
   ],
   // wrangler does NOT inherit these into an env: durable_objects, migrations, kv_namespaces, d1_databases,
@@ -60,6 +67,11 @@
           "name": "ROOM_CREATE_LIMITER",
           "namespace_id": "1001",
           "simple": { "limit": 5, "period": 60 }
+        },
+        {
+          "name": "LEADERBOARD_LIMITER",
+          "namespace_id": "1003",
+          "simple": { "limit": 30, "period": 60 }
         }
       ]
     },
@@ -82,6 +94,11 @@
           "name": "ROOM_CREATE_LIMITER",
           "namespace_id": "1002",
           "simple": { "limit": 5, "period": 60 }
+        },
+        {
+          "name": "LEADERBOARD_LIMITER",
+          "namespace_id": "1004",
+          "simple": { "limit": 30, "period": 60 }
         }
       ]
     }

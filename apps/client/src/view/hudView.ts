@@ -31,6 +31,16 @@ export class Roster {
   nameOf(id: PlayerId): string | undefined {
     return this.names.get(id);
   }
+
+  /** How many players are in the room right now. */
+  get size(): number {
+    return this.names.size;
+  }
+
+  /** Everyone in the room, by player id. */
+  ids(): PlayerId[] {
+    return [...this.names.keys()].sort() as PlayerId[];
+  }
 }
 
 const ELLIPSIS = '…';
@@ -80,7 +90,7 @@ export function curseFrameVisible(tick: number): boolean {
   return Math.floor(tick / CURSE_BLINK_TICKS) % 2 === 0;
 }
 
-export type PlayerStatus = 'alive' | 'cursed' | 'dead';
+export type PlayerStatus = 'alive' | 'cursed' | 'dead' | 'ghost';
 
 export interface HudCard {
   id: PlayerId;
@@ -90,6 +100,8 @@ export interface HudCard {
   status: PlayerStatus;
   /** Seconds of curse left; 0 unless `status === 'cursed'`. */
   curseSeconds: number;
+  /** Ghosts only: whole seconds until the next throw (0 = ready to throw). */
+  throwSeconds: number;
   isSelf: boolean;
 }
 
@@ -113,12 +125,28 @@ export function toHudView(
         id: p.id,
         name: roster.nameOf(p.id) ?? p.id,
         color: PLAYER_TINTS[p.id] ?? 0xffffff,
-        status: !p.alive ? 'dead' : secs > 0 ? 'cursed' : 'alive',
+        status: p.ghost ? 'ghost' : !p.alive ? 'dead' : secs > 0 ? 'cursed' : 'alive',
         curseSeconds: secs,
+        throwSeconds: p.ghost ? curseSeconds(p.throwCooldown ?? 0) : 0,
         isSelf: p.id === selfId,
       };
     });
   return { time: formatRoundTime(snapshot.tick), cards };
+}
+
+/** Card status text: a ghost's own card counts down to the next throw, `THROW!` when it is ready. */
+export function statusLabel(card: HudCard): string {
+  switch (card.status) {
+    case 'cursed':
+      return `CURSE ${card.curseSeconds}s`;
+    case 'ghost':
+      if (!card.isSelf) return 'GHOST';
+      return card.throwSeconds > 0 ? `GHOST ${card.throwSeconds}s` : 'THROW!';
+    case 'dead':
+      return 'DEAD';
+    default:
+      return 'ALIVE';
+  }
 }
 
 export interface CardRect {

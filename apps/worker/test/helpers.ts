@@ -1,10 +1,12 @@
-import { exports } from 'cloudflare:workers';
+import { runInDurableObject } from 'cloudflare:test';
+import { env, exports } from 'cloudflare:workers';
 import {
   type ClientMessage,
   PROTOCOL_VERSION,
   parseServerMessage,
   type ServerMessage,
 } from '@booberman/protocol';
+import type { RoomDO } from '../src/room/RoomDO';
 
 export const v = PROTOCOL_VERSION;
 
@@ -82,3 +84,21 @@ export const isEvent =
   <K extends string>(kind: K) =>
   (m: ServerMessage) =>
     m.t === 'event' && m.kind === kind;
+
+/**
+ * BE-57: a new room waits for everyone to be ready. Tests about play start the round directly,
+ * on the seed the room already has, so `welcome.grid` still matches the board. The `clients` see
+ * that `roundStart` and then forget everything from the waiting room but `welcome`, as if the
+ * round started on join.
+ */
+export async function begin(room: string, ...clients: Client[]): Promise<void> {
+  const stub = env.ROOM.get(env.ROOM.idFromName(room));
+  await runInDurableObject(stub, async (r: RoomDO) => {
+    const storage = (r as unknown as { ctx: DurableObjectState }).ctx.storage;
+    await r.startRound((await storage.get<number>('seed')) ?? 0);
+  });
+  for (const c of clients) {
+    await c.next(isEvent('roundStart'));
+    c.received.splice(0, c.received.length, ...c.received.filter((m) => m.t === 'welcome'));
+  }
+}

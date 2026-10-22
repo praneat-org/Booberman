@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   type ErrorCode,
+  type GameEvent,
   MAX_PLAYERS_PER_ROOM,
   type PlayerId,
   PROTOCOL_VERSION,
@@ -15,6 +16,9 @@ import {
   toSnapshot,
 } from '../game';
 import { InputQueue } from './inputQueue';
+import { buildMatchRecord } from './matchRecord';
+import { saveMatch } from './matchStore';
+import { type HeldSlot, HeldSlots, newToken, RECONNECT_HOLD_MS, sameToken } from './reconnect';
 import { RoomKvSync } from './roomKv';
 import { TickStats } from './tickStats';
 
@@ -24,19 +28,52 @@ const PLAYER_IDS = ['p1', 'p2', 'p3', 'p4'] as const satisfies readonly PlayerId
 /** Stored on each socket with serializeAttachment so it survives hibernation. */
 export type Attachment =
   | { joined: false; room: string }
-  | { joined: true; room: string; playerId: PlayerId; nickname: string; session: number };
+  | {
+      joined: true;
+      room: string;
+      playerId: PlayerId;
+      nickname: string;
+      session: number;
+      /** Pressed "play again" (D9). Lives here so it survives hibernation and leaves with the player. */
+      ready?: boolean;
+      /**
+       * BE-44: reconnect token from this socket's `welcome`. Stays on the server: it moves to the held slot
+       * when the socket drops. Missing only on sockets that joined before BE-44 was deployed (those just leave).
+       */
+      token?: string;
+    };
 
-export type Player = { ws: WebSocket; playerId: PlayerId; nickname: string; session: number };
+export type Player = {
+  ws: WebSocket;
+  playerId: PlayerId;
+  nickname: string;
+  session: number;
+  ready: boolean;
+  token?: string;
+};
+
+/** Someone who holds a slot in the room: connected, or dropped and still inside the 15 s hold (BE-44). */
+export type Seat = Pick<Player, 'playerId' | 'nickname' | 'session'>;
+
+type RoundEndEvent = Extract<GameEvent, { kind: 'roundEnd' }>;
 
 /** Close code sent with ROOM_FULL (4000-4999 is free for applications). */
 export const CLOSE_ROOM_FULL = 4001;
 /** Close code sent with INVALID_NICKNAME (BE-35). */
 export const CLOSE_INVALID_NICKNAME = 4002;
+/** Close code sent with INVALID_TOKEN (BE-44): wrong, expired or already used reconnect token. */
+export const CLOSE_INVALID_TOKEN = 4003;
+/** An old socket is closed with this when the same player reconnects before the server noticed the drop (BE-44). */
+export const CLOSE_REPLACED = 4004;
 
 /** 20Hz game loop (CAR-3793). */
 export const TICK_MS = 50;
 /** One `tick-stats` log line every this many ticks (5 s). */
 export const STATS_LOG_EVERY_TICKS = 100;
+/** D9: the next round starts this long after the first "play again" press, ready or not. */
+export const REMATCH_WINDOW_MS = 15_000;
+/** BE-57: the first round of a room waits for this many players, all ready. */
+export const MIN_PLAYERS_TO_START = 2;
 
 /**
  * One Durable Object = one room (`idFromName(roomId)`).
@@ -57,15 +94,52 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   private readonly stats = new TickStats();
   /** D33: next join id. Persisted, so a session number is never handed out twice, even after an eviction. */
   private nextSession = 1;
+  /**
+   * The `roundEnd` of the round that just finished, while its end screen is up: replayed to anyone
+   * who joins meanwhile. Also stored under `roundEnd`, so the end screen survives an eviction.
+   */
+  private roundEnd: RoundEndEvent | undefined;
+  /**
+   * D9: epoch ms at which the next round starts whether everyone is ready or not; 0 = nobody has
+   * pressed yet, no countdown. The DO alarm is set to this very time (it is what outlives an
+   * eviction); the value itself is rebuilt from the alarm.
+   */
+  private rematchDeadline = 0;
+  /**
+   * BE-44: players whose socket dropped less than 15 s ago. Persisted under `held` (the sockets are gone, so
+   * unlike everything else here this cannot be rebuilt from `getWebSockets()`); the DO alarm expires them.
+   */
+  private held = new HeldSlots();
+  /** True while a rematch is being set up (an await in the middle): a second trigger does nothing. */
+  private restarting = false;
+  /**
+   * BE-57: no round has started since the room got its first player. The loop runs (KV heartbeat)
+   * but the game does not: no snapshots, inputs dropped. `rematch` doubles as "ready"; the first
+   * round starts once at least two players are in and all of them are ready. Also stored under
+   * `waiting`, so a DO that wakes up does not start a round on its own.
+   */
+  private waiting = false;
+  /**
+   * BE-42: epoch ms at which the round on the board began (`matches.started_at`); 0 = not known yet.
+   * In memory only, on purpose: after an eviction the round is rebuilt from scratch (`recoverRound`),
+   * so it starts counting again. Never read by `src/game/` (no clock in there).
+   */
+  private roundStartedAt = 0;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
       this.nextSession = (await ctx.storage.get<number>('nextSession')) ?? 1;
+      this.held = new HeldSlots((await ctx.storage.get<HeldSlot[]>('held')) ?? []);
+      this.rematchDeadline = (await ctx.storage.get<number>('rematchDeadline')) ?? 0;
       const first = this.players()[0];
-      if (!first) return;
-      this.room = attachmentOf(first.ws).room;
+      // a room whose only players are dropped ones has no socket to read the room id from
+      const room = first ? attachmentOf(first.ws).room : this.held.list()[0]?.room;
+      if (!room) return;
+      this.room = room;
       this.seedCache = await this.seed();
+      this.waiting = (await ctx.storage.get<boolean>('waiting')) === true;
+      if (!this.waiting) await this.recoverRound();
       this.startLoop();
     });
   }
@@ -103,7 +177,7 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
         if (msg.room !== attachmentOf(ws).room) {
           return this.sendError(ws, 'BAD_MESSAGE', 'join.room does not match the room in the URL');
         }
-        return this.join(ws, msg.nickname);
+        return this.join(ws, msg.nickname, msg.token);
       case 'input': {
         const a = attachmentOf(ws);
         if (!a.joined) return this.sendError(ws, 'BAD_MESSAGE', 'join first');
@@ -114,28 +188,41 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       }
       case 'rematch':
         if (!attachmentOf(ws).joined) return this.sendError(ws, 'BAD_MESSAGE', 'join first');
-        // rematch: BE-41
-        return;
+        return this.rematch(ws);
     }
   }
 
-  override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
-    this.leave(ws);
-    try {
-      ws.close(code === 1005 ? 1000 : code, reason);
-    } catch {
-      // already closed
+  override async webSocketClose(ws: WebSocket, code: number, _reason: string): Promise<void> {
+    // The socket is already closing; re-closing it from here races the cleanup path and can
+    // leave the room in a stale joined state during a fast leave->join sequence.
+    // BE-44: only a connection that was lost (1006, 1001 ...) keeps its slot; the client's own
+    // `close(1000)` (leaving on purpose) gives it up at once, as before.
+    const left = leftOnPurpose(code) ? this.leave(ws) : this.hold(ws) || this.leave(ws);
+    if (left) {
+      await this.rearmAlarm();
+      await this.rematchAfterLeave();
     }
   }
 
   /** Treated like a close: the player leaves and the others are told. */
   override async webSocketError(ws: WebSocket, _error?: unknown): Promise<void> {
-    this.leave(ws);
-    try {
-      ws.close(1011, 'error');
-    } catch {
-      // already closed
-    }
+    // Same here: the runtime has already signalled the socket is broken; closing it again is not needed.
+    const left = this.leave(ws);
+    if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'error');
+    if (left) await this.rematchAfterLeave();
+  }
+
+  /**
+   * One DO alarm, two jobs, armed for whichever is first (`rearmAlarm`): the end of a dropped player's
+   * 15 s hold (BE-44) and the rematch deadline (D9 / BE-41). Safe to deliver twice or after the round restarted.
+   */
+  override async alarm(): Promise<void> {
+    await this.expireHeld(Date.now());
+    // the rematch starts only when its own deadline has come, whatever woke the alarm: a hold's alarm
+    // delivered twice, or one that is early for the countdown, must not start a round nobody asked for
+    if (this.rematchDeadline === 0 || Date.now() < this.rematchDeadline) return;
+    if (!this.state?.result || this.players().length === 0) return;
+    await this.startRematch();
   }
 
   /** Everyone who has joined (sorted by playerId), rebuilt from the sockets Cloudflare holds for us. */
@@ -144,14 +231,33 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     for (const ws of this.ctx.getWebSockets()) {
       const a = attachmentOf(ws);
       if (a.joined)
-        players.push({ ws, playerId: a.playerId, nickname: a.nickname, session: a.session });
+        players.push({
+          ws,
+          playerId: a.playerId,
+          nickname: a.nickname,
+          session: a.session,
+          ready: a.ready === true,
+          token: a.token,
+        });
     }
     return players.sort((x, y) => x.playerId.localeCompare(y.playerId));
   }
 
-  private async join(ws: WebSocket, nickname: string): Promise<void> {
+  /**
+   * Everyone who holds a slot, sorted by playerId: the connected players plus the dropped ones still inside
+   * their 15 s (BE-44). This is who is *in the game* and who counts towards the 4 slots; `players()` is who
+   * is connected, i.e. who gets messages and can send input.
+   */
+  seats(): Seat[] {
+    const seats: Seat[] = [...this.players(), ...this.held.list()];
+    return seats.sort((x, y) => x.playerId.localeCompare(y.playerId));
+  }
+
+  private async join(ws: WebSocket, nickname: string, token?: string): Promise<void> {
     if (attachmentOf(ws).joined) return this.sendError(ws, 'BAD_MESSAGE', 'already joined');
-    const others = this.players();
+    if (token !== undefined) return this.resume(ws, token);
+    // a dropped player still holds their slot (BE-44): it is neither free nor counted out of the 4
+    const others = this.seats();
     const taken = new Set(others.map((p) => p.playerId));
     const playerId = PLAYER_IDS.find((id) => !taken.has(id));
     if (!playerId || others.length >= MAX_PLAYERS_PER_ROOM) {
@@ -160,15 +266,23 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       return;
     }
 
+    // decided now, before the first await: a tick in between would already count the newcomer
+    const startOver = this.unplayed();
+    if (!this.state && !this.waiting) {
+      this.waiting = true;
+      void this.ctx.storage.put('waiting', true).catch(logFailure('waiting-save'));
+    }
     // one id per join (D33), taken synchronously so two joins can never share it
     const session = this.nextSession++;
     void this.ctx.storage.put('nextSession', this.nextSession);
+    const reconnectToken = newToken();
     ws.serializeAttachment({
       joined: true,
       room: attachmentOf(ws).room,
       playerId,
       nickname,
       session,
+      token: reconnectToken,
     } satisfies Attachment);
     const seed = await this.seed();
     this.seedCache = seed;
@@ -176,30 +290,177 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     this.kvSync()?.update(others.length + 1);
     // the board comes from the game state (seeded board once BE-36 lands), never a fixed sample
     const grid = this.state?.grid ?? createInitialState(seed, [playerId]).grid;
-    send(ws, { v, t: 'welcome', playerId, seed, grid });
+    send(ws, { v, t: 'welcome', playerId, seed, grid, token: reconnectToken });
     for (const p of others) {
       send(ws, { v, t: 'event', kind: 'playerJoined', playerId: p.playerId, nickname: p.nickname });
     }
     this.broadcast({ v, t: 'event', kind: 'playerJoined', playerId, nickname }, ws);
+    if (startOver) await this.startRound(randomSeed());
+    else if (this.waiting) send(ws, this.rematchStatus());
+    else this.replayEndScreen(ws);
     this.startLoop();
   }
 
-  private leave(ws: WebSocket): void {
+  /**
+   * BE-44: `join` with a reconnect token. The token must belong to a player whose slot is held (the socket
+   * dropped less than 15 s ago), or to a socket that is still connected (the client noticed the drop before
+   * the server did: the old socket is closed and the new one takes over). Then the new socket gets that
+   * player's slot, id and game state back, a new token, and the same `welcome` / roster / end screen a joiner
+   * gets. Nobody else is told anything: to them the player never left. Anything else is INVALID_TOKEN and the
+   * socket is closed, so a client falls back to a normal join.
+   */
+  private async resume(ws: WebSocket, token: string): Promise<void> {
+    const room = attachmentOf(ws).room;
+    // first retire the holds that ran out, even if their alarm is late: a token is never honoured past 15 s
+    await this.expireHeld(Date.now());
+    let seat: Seat | undefined = this.held.claim(token, Date.now());
+    // a takeover is not a drop: the player never left, so what hangs on the socket (the rematch press) stays
+    let ready = false;
+    if (!seat) {
+      const old = this.players().find((p) => sameToken(p.token, token));
+      if (old) {
+        ready = old.ready;
+        old.ws.serializeAttachment({ joined: false, room } satisfies Attachment);
+        this.queue.remove(old.playerId);
+        old.ws.close(CLOSE_REPLACED, 'REPLACED');
+        seat = old;
+      }
+    }
+    if (!seat) {
+      this.sendError(ws, 'INVALID_TOKEN');
+      ws.close(CLOSE_INVALID_TOKEN, 'INVALID_TOKEN');
+      return;
+    }
+    const { playerId, nickname, session } = seat;
+    const reconnectToken = newToken();
+    ws.serializeAttachment({
+      joined: true,
+      room,
+      playerId,
+      nickname,
+      session,
+      token: reconnectToken,
+      ...(ready ? { ready } : {}),
+    } satisfies Attachment);
+    this.saveHeld();
+    await this.rearmAlarm();
+    const seed = await this.seed();
+    this.seedCache = seed;
+    this.room = room;
+    const grid = this.state?.grid ?? createInitialState(seed, [playerId]).grid;
+    send(ws, { v, t: 'welcome', playerId, seed, grid, token: reconnectToken });
+    for (const p of this.seats()) {
+      if (p.playerId === playerId) continue;
+      send(ws, { v, t: 'event', kind: 'playerJoined', playerId: p.playerId, nickname: p.nickname });
+    }
+    if (this.waiting) send(ws, this.rematchStatus());
+    else this.replayEndScreen(ws);
+    this.startLoop();
+  }
+
+  /**
+   * The socket of a joined player dropped: their character stays in the game with no input and the slot is
+   * held for 15 s (stored, with the alarm re-armed by the caller). Returns false when there is nothing to
+   * hold (never joined, or no token), and the caller treats it as a normal leave.
+   */
+  private hold(ws: WebSocket): boolean {
     const a = attachmentOf(ws);
-    if (!a.joined) return;
+    if (!a.joined || a.token === undefined) return false;
     ws.serializeAttachment({ joined: false, room: a.room } satisfies Attachment);
     this.queue.remove(a.playerId);
+    this.held.add({
+      playerId: a.playerId,
+      nickname: a.nickname,
+      session: a.session,
+      token: a.token,
+      room: a.room,
+      expiresAt: Date.now() + RECONNECT_HOLD_MS,
+    });
+    this.saveHeld();
+    this.room = a.room;
+    // the room is not empty: the tick keeps running so the dropped character stays part of the game
+    return true;
+  }
+
+  /** Retires every hold whose 15 s are up: the player is out for good. Returns how many. */
+  private async expireHeld(now: number): Promise<number> {
+    const gone = this.held.expire(now);
+    if (gone.length === 0) return 0;
+    this.saveHeld();
+    for (const slot of gone) this.vacate(slot.playerId, slot.room);
+    await this.rearmAlarm();
+    await this.rematchAfterLeave();
+    return gone.length;
+  }
+
+  private saveHeld(): void {
+    void this.ctx.storage.put('held', this.held.list()).catch(logFailure('held-save'));
+  }
+
+  /**
+   * One DO alarm for everything that has a deadline: the earliest hold expiry and the rematch countdown.
+   * No deadline at all = no alarm, so an empty room never has one.
+   */
+  private async rearmAlarm(): Promise<void> {
+    const due = [this.rematchDeadline, this.held.nextExpiry() ?? 0].filter((t) => t > 0);
+    if (due.length === 0) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(Math.min(...due));
+  }
+
+  /** Sets (or with 0 clears) the rematch countdown. Stored: the alarm alone can no longer tell it from a hold. */
+  private setRematchDeadline(deadline: number): void {
+    this.rematchDeadline = deadline;
+    const write =
+      deadline === 0
+        ? this.ctx.storage.delete('rematchDeadline')
+        : this.ctx.storage.put('rematchDeadline', deadline);
+    void write.catch(logFailure('rematch-deadline-save'));
+  }
+
+  /**
+   * True when the round on the board was never a contest and is over for its only player: they
+   * timed out alone, or died alone (D32). A second player then gets a fresh round together with
+   * them, instead of a frozen room, or a win handed to the newcomer on the first tick.
+   */
+  private unplayed(): boolean {
+    const s = this.state;
+    if (!s || s.contested || s.players.length === 0) return false;
+    return s.result !== undefined || s.players.every((p) => !p.alive);
+  }
+
+  /** Someone joins while the end screen is up: they get the same `roundEnd` (and countdown) the others saw. */
+  private replayEndScreen(ws: WebSocket): void {
+    if (!this.roundEnd) return;
+    send(ws, this.roundEnd);
+    if (this.rematchDeadline !== 0) send(ws, this.rematchStatus());
+  }
+
+  /** Returns true when a player left (a socket that never joined has nothing to remove). */
+  private leave(ws: WebSocket): boolean {
+    const a = attachmentOf(ws);
+    if (!a.joined) return false;
+    ws.serializeAttachment({ joined: false, room: a.room } satisfies Attachment);
+    this.vacate(a.playerId, a.room);
+    return true;
+  }
+
+  /**
+   * A slot is given up for good (the player left, or their hold ran out): out of the game, the others are
+   * told, and the room closes down when nobody is left, connected or held.
+   */
+  private vacate(playerId: PlayerId, room: string): void {
+    this.queue.remove(playerId);
     // drop the leaver from the game state now, not on the next tick: someone who joins into the
     // same slot within one tick must start fresh (spawn, ackSeq 0), not inherit the old PlayerSim
     if (this.state) {
       this.state = {
         ...this.state,
-        players: this.state.players.filter((p) => p.id !== a.playerId),
+        players: this.state.players.filter((p) => p.id !== playerId),
       };
     }
-    this.broadcast({ v, t: 'event', kind: 'playerLeft', playerId: a.playerId }, ws);
-    this.room = a.room;
-    const remaining = this.players().length;
+    this.broadcast({ v, t: 'event', kind: 'playerLeft', playerId });
+    this.room = room;
+    const remaining = this.seats().length;
     this.kvSync()?.update(remaining);
     if (remaining === 0) this.stopLoop();
   }
@@ -228,25 +489,154 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   /**
    * Start a new round with `seed` for everyone in the room: new board, everyone alive at their
    * spawn, then `roundStart { seed, grid }` (D8) to all. The caller picks the seed
-   * (BE-41 calls this when the rematch is on; `game/` may not use `Math.random`).
+   * (the rematch calls this; `game/` may not use `Math.random`).
    * Does nothing in an empty room — nobody to play, and no loop must be armed for it.
+   *
+   * Order matters for crash recovery: the new seed is stored and the old end screen deleted in ONE
+   * transaction, before anything is announced; the swap + broadcast after it is one synchronous
+   * step, so no tick can send a snapshot of the new round before `roundStart`. If the DO dies in
+   * between, `recoverRound` starts the stored seed and announces it when it wakes up.
    */
   async startRound(seed: number): Promise<void> {
     if (this.players().length === 0) return;
     seed >>>= 0; // same uint32 as `GameState.seed` / `welcome.seed`
-    // persist first (a hibernation restart rebuilds from this seed); the swap + broadcast below
-    // is one synchronous step, so no tick can send a snapshot of the new round before roundStart
-    await this.ctx.storage.put('seed', seed);
+    await this.ctx.storage.transaction(async (txn) => {
+      await txn.put('seed', seed);
+      await txn.delete('roundEnd');
+      await txn.delete('waiting');
+    });
+    this.setRematchDeadline(0);
+    await this.rearmAlarm();
     const players = this.players();
     if (players.length === 0) return;
+    // dropped players (BE-44) are still in the game: the new round has their characters too
+    const seats = this.seats();
     const { state, events } = newRound(
       seed,
-      players.map((p) => p.playerId),
-      sessionsOf(players),
+      seats.map((p) => p.playerId),
+      sessionsOf(seats),
     );
     this.seedCache = state.seed;
     this.state = state;
+    this.roundStartedAt = Date.now();
     this.queue.clear();
+    this.roundEnd = undefined;
+    this.waiting = false;
+    this.clearReady(players);
+    for (const e of events) this.broadcast(e);
+  }
+
+  // ── rematch (D9) ──────────────────────────────────────────────────────────
+  // Who can start a round: nobody directly. A client can only say `rematch` (ready), and only
+  // while the end screen is up or the room is waiting (BE-57); the round starts when every player
+  // in the room is ready, or when the alarm fires REMATCH_WINDOW_MS after the first press (end
+  // screen only: a waiting room has no countdown). The seed is always picked here.
+
+  private async rematch(ws: WebSocket): Promise<void> {
+    const a = attachmentOf(ws);
+    if (!a.joined || !this.canStart()) return; // no end screen / waiting room: a stale or early press, ignore
+    if (a.ready) return send(ws, this.rematchStatus()); // pressed already: repeat the status, change nothing
+    ws.serializeAttachment({ ...a, ready: true } satisfies Attachment);
+    if (this.everyoneReady()) return this.startRematch();
+    if (this.waiting) return this.broadcast(this.rematchStatus());
+    if (this.rematchDeadline === 0) {
+      this.setRematchDeadline(Date.now() + REMATCH_WINDOW_MS);
+      await this.rearmAlarm();
+    }
+    this.broadcast(this.rematchStatus());
+  }
+
+  /** Starts the next round of a finished one. Idempotent: a second call while one runs, or after it ran, does nothing. */
+  private async startRematch(): Promise<void> {
+    if (this.restarting || !this.canStart()) return;
+    this.restarting = true;
+    try {
+      await this.startRound(randomSeed());
+    } finally {
+      this.restarting = false;
+    }
+  }
+
+  /** Someone left during the end screen: their press is gone, so re-check who is ready. */
+  private async rematchAfterLeave(): Promise<void> {
+    const players = this.players();
+    if (players.length === 0) return; // empty room: `stopLoop` already dropped the countdown
+    if (this.waiting) {
+      if (this.everyoneReady()) return this.startRematch();
+      return this.broadcast(this.rematchStatus());
+    }
+    if (this.rematchDeadline === 0 || !this.state?.result) return; // nobody had pressed
+    const ready = players.filter((p) => p.ready).length;
+    if (ready === players.length) return this.startRematch();
+    if (ready === 0) {
+      // the only ones who wanted a rematch are gone: no countdown until somebody presses again
+      this.setRematchDeadline(0);
+      await this.rearmAlarm();
+    }
+    this.broadcast(this.rematchStatus());
+  }
+
+  private rematchStatus(): ServerMessage {
+    return {
+      v,
+      t: 'event',
+      kind: 'rematchStatus',
+      ready: this.players()
+        .filter((p) => p.ready)
+        .map((p) => p.playerId),
+      deadline: this.rematchDeadline,
+    };
+  }
+
+  private everyoneReady(): boolean {
+    const players = this.players();
+    // BE-57: the first round needs an opponent; a rematch may go on with whoever is left
+    const min = this.waiting ? MIN_PLAYERS_TO_START : 1;
+    return players.length >= min && players.every((p) => p.ready);
+  }
+
+  /** A press of "ready" counts: the end screen is up, or the room waits for its first round. */
+  private canStart(): boolean {
+    return this.waiting || this.state?.result !== undefined;
+  }
+
+  private clearReady(players: readonly Player[]): void {
+    this.setRematchDeadline(0);
+    for (const p of players) {
+      const a = attachmentOf(p.ws);
+      if (a.joined && a.ready)
+        p.ws.serializeAttachment({ ...a, ready: false } satisfies Attachment);
+    }
+  }
+
+  /**
+   * The DO woke up with people still connected (deploy / crash): the game state lived in memory
+   * only, so it is rebuilt here. Two cases:
+   * - the end screen was up (`roundEnd` stored): bring it back frozen, with the rematch countdown
+   *   still running (the alarm and the sockets' ready flags survived), no announcement needed;
+   * - mid-round, or a rematch cut short between saving the seed and announcing it: start a round
+   *   from the stored seed and tell everyone with `roundStart`, or clients would keep drawing the old board.
+   */
+  private async recoverRound(): Promise<void> {
+    const players = this.players();
+    const seats = this.seats();
+    const seed = this.seedCache ?? 0;
+    const { state, events } = newRound(
+      seed,
+      seats.map((p) => p.playerId),
+      sessionsOf(seats),
+    );
+    const ended = await this.ctx.storage.get<RoundEndEvent>('roundEnd');
+    if (ended) {
+      this.state = { ...state, result: { winner: ended.winner, reason: ended.reason } };
+      this.roundEnd = ended;
+      // `rematchDeadline` was read from storage in the constructor; the alarm may be a hold's now
+      return;
+    }
+    this.state = state;
+    this.roundStartedAt = Date.now();
+    this.clearReady(players);
+    await this.rearmAlarm();
     for (const e of events) this.broadcast(e);
   }
 
@@ -260,23 +650,57 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (this.loop !== null) clearInterval(this.loop);
     this.loop = null;
     this.state = undefined;
+    this.roundStartedAt = 0;
     this.queue.clear();
+    this.forgetEndScreen();
+    if (this.waiting) {
+      this.waiting = false;
+      void this.ctx.storage.delete('waiting').catch(logFailure('waiting-delete'));
+    }
     if (this.stats.total > 0) this.logStats('tick-stats-final');
     this.stats.reset();
   }
 
+  /** Keeps the `roundEnd` for people who join during the end screen, and across an eviction. */
+  private rememberEndScreen(end: RoundEndEvent): void {
+    this.roundEnd = end;
+    void this.ctx.storage.put('roundEnd', end).catch(logFailure('round-end-save'));
+  }
+
+  /** An empty room keeps no end screen and no rematch countdown (no alarm may outlive the last player). */
+  private forgetEndScreen(): void {
+    if (this.roundEnd === undefined && this.rematchDeadline === 0) return;
+    this.roundEnd = undefined;
+    this.setRematchDeadline(0);
+    void this.rearmAlarm().catch(logFailure('rematch-alarm-delete'));
+    void this.ctx.storage.delete('roundEnd').catch(logFailure('round-end-delete'));
+  }
+
   private tick(): void {
     const players = this.players();
-    if (players.length === 0 || this.seedCache === undefined) {
+    const seats = this.seats();
+    // dropped players (BE-44) keep the room, and so the loop, alive until their 15 s are up
+    if (seats.length === 0 || this.seedCache === undefined) {
       this.stopLoop();
       return;
     }
-    this.kvSync()?.heartbeat(players.length);
+    this.kvSync()?.heartbeat(seats.length);
+    if (this.waiting) {
+      this.queue.drain(); // nothing moves before the first round
+      return;
+    }
     const started = performance.now();
     try {
-      const { state, events } = simulate(this.syncPlayers(players), this.queue.drain());
+      // the round on the board starts being played now (first tick of a room / of a round nobody announced)
+      if (this.roundStartedAt === 0 && !this.state?.result) this.roundStartedAt = Date.now();
+      const { state, events } = simulate(this.syncPlayers(seats), this.drainInputs());
       this.state = state;
       for (const e of events) this.broadcast(e);
+      const end = events.find((e): e is RoundEndEvent => e.kind === 'roundEnd');
+      if (end) {
+        this.rememberEndScreen(end);
+        this.recordMatch(end, state, seats);
+      }
       for (const p of players) send(p.ws, toSnapshot(state, p.playerId));
     } catch (error) {
       console.error(JSON.stringify({ msg: 'tick-failed', error: String(error) }));
@@ -286,8 +710,36 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
     if (this.stats.total % STATS_LOG_EVERY_TICKS === 0) this.logStats('tick-stats');
   }
 
+  /**
+   * BE-42 / D12: stores the finished round in D1 without making anybody wait for it. The write is
+   * handed to `ctx.waitUntil` (in a Durable Object a pending waitUntil promise keeps the object from
+   * being evicted until it settles, so a deploy or idle moment does not drop the write) and is never
+   * awaited: the end screen, the next tick and the rematch do not depend on D1. A failure (D1 down,
+   * slow, batch rejected) is logged and the game goes on; the result is simply lost, as D12 accepts.
+   * Never throws: a bug in building the record must not cost the room its tick.
+   */
+  private recordMatch(end: RoundEndEvent, state: GameState, players: readonly Seat[]): void {
+    const startedAt = this.roundStartedAt;
+    this.roundStartedAt = 0; // the next round (startRound) sets it again
+    try {
+      const record = buildMatchRecord(end, {
+        id: crypto.randomUUID(),
+        roomId: this.room,
+        seed: state.seed,
+        startedAt: startedAt === 0 ? Date.now() : startedAt,
+        endedAt: Date.now(),
+        nicknames: new Map(players.map((p) => [p.playerId, p.nickname] as const)),
+      });
+      this.ctx.waitUntil(
+        saveMatch(this.env.DB, record).catch(logFailure('match-save', { match: record.id })),
+      );
+    } catch (error) {
+      logFailure('match-save', { room: this.room })(error);
+    }
+  }
+
   /** Game state follows the sockets: new first tick, a late joiner or a leaver all land here. */
-  private syncPlayers(players: Player[]): GameState {
+  private syncPlayers(players: readonly Seat[]): GameState {
     const ids = players.map((p) => p.playerId);
     const sessions = sessionsOf(players);
     const seed = this.seedCache ?? 0;
@@ -303,6 +755,17 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
       .filter((id) => !keptIds.has(id))
       .flatMap((id) => createInitialState(seed, [id], sessions).players);
     return { ...state, players: [...kept, ...added].sort((a, b) => a.id.localeCompare(b.id)) };
+  }
+
+  /**
+   * This tick's inputs. A dropped player (BE-44) gets "stand still, no bomb": without it `simulate` would
+   * keep walking them in their last direction (D27: no input keeps the old direction).
+   */
+  private drainInputs() {
+    const inputs = this.queue.drain();
+    for (const slot of this.held.list())
+      inputs.set(slot.playerId, { dir: 'none', bomb: false, seq: 0 });
+    return inputs;
   }
 
   private logStats(msg: string): void {
@@ -321,14 +784,25 @@ export class RoomDO extends DurableObject<Cloudflare.Env> {
   private async seed(): Promise<number> {
     let seed = await this.ctx.storage.get<number>('seed');
     if (seed === undefined) {
-      seed = crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
+      seed = randomSeed();
       await this.ctx.storage.put('seed', seed);
     }
     return seed;
   }
 }
 
-const sessionsOf = (players: readonly Player[]) =>
+/** A new round's seed, picked here and never by a client (`game/` may not use randomness). */
+const randomSeed = (): number => crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
+
+const logFailure =
+  (msg: string, extra: Record<string, string> = {}) =>
+  (error: unknown) =>
+    console.error(JSON.stringify({ msg, ...extra, error: String(error) }));
+
+/** The client's own `close(1000)` (WsTransport) or a close with no code (1005): leaving on purpose, nothing to hold. */
+const leftOnPurpose = (code: number): boolean => code === 1000 || code === 1005;
+
+const sessionsOf = (players: readonly Seat[]) =>
   new Map(players.map((p) => [p.playerId, p.session] as const));
 
 export function attachmentOf(ws: WebSocket): Attachment {

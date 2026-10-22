@@ -15,6 +15,8 @@ export interface BombView {
   /** Bright phase of the blink (drawn lighter / larger). */
   bright: boolean;
   fast: boolean;
+  /** Lobbed by a ghost (BE-46): drawn smaller. */
+  ghost: boolean;
 }
 
 /** Blink phase comes from the server's `fuse`, not from a local timer, so it can't drift. */
@@ -24,11 +26,16 @@ export function bombBlink(fuse: number): { fast: boolean; bright: boolean } {
   return { fast, bright: Math.floor(fuse / period) % 2 === 0 };
 }
 
-export function toBombViews(bombs: SnapshotMessage['bombs']): BombView[] {
-  return bombs.map((b) => ({
+/** `drawn` = tween positions for sliding bombs (FE-23), same order as `bombs`; absent = on the tile. */
+export function toBombViews(
+  bombs: SnapshotMessage['bombs'],
+  drawn?: readonly { x: number; y: number }[],
+): BombView[] {
+  return bombs.map((b, i) => ({
     key: tileKey(b.x, b.y),
-    px: b.x * TILE_SIZE,
-    py: b.y * TILE_SIZE,
+    px: (drawn?.[i]?.x ?? b.x) * TILE_SIZE,
+    py: (drawn?.[i]?.y ?? b.y) * TILE_SIZE,
+    ghost: b.ghost === true,
     ...bombBlink(b.fuse),
   }));
 }
@@ -56,7 +63,7 @@ export interface ItemView {
   px: number;
   py: number;
   kind: ItemKind;
-  /** Spritesheet frame: 0 = curse (purple), 1 = kick (green). */
+  /** Spritesheet frame: 0 = curse (? block), 1 = kick (skate). */
   frame: number;
 }
 

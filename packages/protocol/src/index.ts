@@ -6,6 +6,7 @@
 export * from './board';
 export * from './fixtures';
 export * from './health';
+export * from './leaderboard';
 export * from './messages';
 export * from './nickname';
 export * from './parse';

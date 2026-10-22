@@ -2,7 +2,7 @@ import { evictDurableObject, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { attachmentOf, CLOSE_ROOM_FULL, type RoomDO } from '../src/room/RoomDO';
-import { type Client, connect, isEvent, join, v } from './helpers';
+import { begin, type Client, connect, isEvent, join, v } from './helpers';
 
 const stubFor = (room: string) => env.ROOM.get(env.ROOM.idFromName(room));
 const isError = (code: string) => (m: { t: string; code?: string }) =>
@@ -131,6 +131,7 @@ describe('webSocketError', () => {
       await room.webSocketError(ws, new Error('boom'));
     });
     expect(await a.next(isEvent('playerLeft'))).toMatchObject({ playerId: 'p2' });
+    expect(await waitClosed(b)).toMatchObject({ code: 1011, reason: 'error' });
     const players = await runInDurableObject(stubFor('errroom'), (room: RoomDO) =>
       room.players().map((p) => p.playerId),
     );
@@ -142,6 +143,7 @@ describe('webSocketError', () => {
 describe('hibernation (AC 6)', () => {
   it('after the DO is evicted, players come back from attachments and the room keeps working', async () => {
     const a = await join('sleepy', 'มิ้นท์');
+    await begin('sleepy', a);
     const b = await join('sleepy', 'บอส');
     const seedBefore = (await a.next((m) => m.t === 'welcome')) as { seed: number };
     const stub = stubFor('sleepy');

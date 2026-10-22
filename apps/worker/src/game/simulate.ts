@@ -1,10 +1,14 @@
 import { type GameEvent, GRID_WIDTH, PROTOCOL_VERSION } from '@booberman/protocol';
+import { attributeKill, type Kill, scoreKills } from './attribution';
 import { isWalkable } from './board';
 import { resolveExplosions } from './bombs';
 import { DEFAULT_CONFIG } from './config';
 import { effectiveDir, stepCurses } from './curse';
 import { VECTORS } from './dirs';
+import { spawnGhosts, stepGhosts } from './ghost';
+import { kickBombs, slideBombs } from './kick';
 import { checkRoundEnd } from './round';
+import { summarizeRound } from './summary';
 import type {
   Bomb,
   Dir,
@@ -106,26 +110,35 @@ function creditOf(players: readonly PlayerSim[], fire: GameState['flames'][numbe
   return players.find((q) => q.session === fire.ownerSession)?.id ?? DEPARTED;
 }
 
-function applyDeaths(players: readonly PlayerSim[], flames: GameState['flames']): PlayerSim[] {
-  return players.map((p) => {
+function applyDeaths(
+  players: readonly PlayerSim[],
+  flames: GameState['flames'],
+  cfg: GameConfig,
+): { players: PlayerSim[]; kills: Kill[] } {
+  const kills: Kill[] = [];
+  const next = players.map((p) => {
     if (!p.alive) return p;
     const [x, y] = tileOf(p);
     const fire = flames.find((f) => f.x === x && f.y === y);
     if (!fire) return p;
+    const owner = creditOf(players, fire);
+    // players in id order, so the kills (and their events) come out in id order too
+    kills.push(attributeKill(players, p, { owner, kind: fire.kind ?? 'bomb' }));
     return {
       ...p,
       alive: false,
-      heldDir: 'none',
-      walkDir: 'none',
-      killedBy: creditOf(players, fire),
+      heldDir: 'none' as const,
+      walkDir: 'none' as const,
+      killedBy: owner,
     };
   });
+  return { players: scoreKills(next, kills, cfg), kills };
 }
 
 /**
- * One 50 ms tick, in a fixed order: age bombs and flames -> walk -> place bombs ->
- * explode due bombs and their chain (boxes break, items drop) -> deaths -> curses (age, pick up,
- * pass on by contact; curse.ts) -> round end
+ * One 50 ms tick, in a fixed order: age bombs and flames -> walk -> kick + slide bombs (kick.ts) -> place bombs ->
+ * explode due bombs and their chain (boxes break, items drop) -> deaths (credit and counters:
+ * attribution.ts, one `kill` event each) -> curses (age, pick up, pass on by contact; curse.ts) -> round end
  * (last survivor / all dead / time limit; D32 in the PR; elimination needs `contested`). After the end the state is frozen.
  * Pure: never mutates `state` or `inputs`; the result does not depend on Map iteration
  * order (players are stepped in id order, state keeps them sorted).
@@ -143,11 +156,20 @@ export function simulate(
   const counting = state.bombs.map((b) => ({ ...b, fuse: b.fuse - 1 }));
   const burning = state.flames.map((f) => ({ ...f, ttl: f.ttl - 1 })).filter((f) => f.ttl > 0);
 
-  const walked = state.players.map((p) => step(p, inputs.get(p.id), state.grid, bombTiles, cfg));
+  const stepped = state.players.map((p) => step(p, inputs.get(p.id), state.grid, bombTiles, cfg));
+  const ghosts = stepGhosts(stepped, inputs, state.grid, counting, cfg);
+  const walked = ghosts.players;
   const blast = resolveExplosions(
     {
       grid: state.grid,
-      bombs: placeBombs(walked, inputs, counting, cfg),
+      // kicks and slides come after walking (positions are final) and the ghosts' throws (a bomb
+      // that just landed can be kicked), before new bombs and blasts
+      bombs: placeBombs(
+        walked,
+        inputs,
+        slideBombs(walked, kickBombs(walked, ghosts.bombs, state.grid), state.grid, cfg),
+        cfg,
+      ),
       flames: burning,
       items: state.items,
       rngSeed: state.rngSeed,
@@ -156,15 +178,28 @@ export function simulate(
   );
 
   const tick = state.tick + 1;
-  const dead = applyDeaths(walked, blast.flames);
-  const cursed = stepCurses(dead, blast.items, cfg);
-  const players = cursed.players;
+  const deaths = applyDeaths(walked, blast.flames, cfg);
+  const cursed = stepCurses(deaths.players, blast.items, cfg);
+  const players = spawnGhosts(cursed.players, cfg);
   // sticky: judged on the players this tick started with, before anyone can leave again
   const contested = state.contested || state.players.length >= 2;
   const result = checkRoundEnd(players, tick, cfg, contested);
-  const events: GameEvent[] = result
-    ? [...blast.events, { v: PROTOCOL_VERSION, t: 'event', kind: 'roundEnd', ...result }]
-    : blast.events;
+  // order inside a tick: what broke, who died, then (always last) how the round ended
+  const events: GameEvent[] = [
+    ...blast.events,
+    ...deaths.kills.map(
+      (k): GameEvent => ({ v: PROTOCOL_VERSION, t: 'event', kind: 'kill', ...k }),
+    ),
+  ];
+  if (result) {
+    events.push({
+      v: PROTOCOL_VERSION,
+      t: 'event',
+      kind: 'roundEnd',
+      ...result,
+      ...summarizeRound(players),
+    });
+  }
 
   return {
     state: {

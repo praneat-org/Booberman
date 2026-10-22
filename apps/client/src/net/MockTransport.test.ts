@@ -399,7 +399,7 @@ describe('MockTransport bombs (FE-15)', () => {
   });
 
   it('drops a bomb command sent while dead instead of firing it after respawn', () => {
-    const t = new MockTransport({ bots: 0 });
+    const t = new MockTransport({ bots: 0, autoRematch: true });
     const { got } = drive(t, 0);
     t.send({ seq: 1, dir: 'none', bomb: true });
     for (let i = 0; i < 41; i++) t.step();
@@ -414,7 +414,7 @@ describe('MockTransport bombs (FE-15)', () => {
   it('drops a bomb command that was sent in an earlier round but arrives after the restart (latency)', () => {
     vi.useFakeTimers();
     // tickMs huge: the interval never fires, we step by hand and only move fake time to flush the latency
-    const t = new MockTransport({ bots: 0, latencyMs: 100, tickMs: 1_000_000 });
+    const t = new MockTransport({ bots: 0, latencyMs: 100, tickMs: 1_000_000, autoRematch: true });
     const { got } = drive(t, 0);
     const flush = () => vi.advanceTimersByTime(100);
     const me = () => got.snaps.at(-1)?.players[0];
@@ -435,13 +435,14 @@ describe('MockTransport bombs (FE-15)', () => {
     flush();
     expect(roundStarts()).toBe(1);
     expect(me()?.alive).toBe(true);
-    expect(got.snaps.at(-1)?.bombs).toEqual([]);
+    // the bot may legitimately have placed its own bomb in the new round: only ours (at the spawn) must be missing
+    expect(got.snaps.at(-1)?.bombs.filter((b) => b.x === 1 && b.y === 1)).toEqual([]);
     t.disconnect();
   });
 
   it('drops a whole stale-round message (dir and seq too), not only its bomb (latency)', () => {
     vi.useFakeTimers();
-    const t = new MockTransport({ bots: 0, latencyMs: 100, tickMs: 1_000_000 });
+    const t = new MockTransport({ bots: 0, latencyMs: 100, tickMs: 1_000_000, autoRematch: true });
     const { got } = drive(t, 0);
     const flush = () => vi.advanceTimersByTime(100);
     const me = () => got.snaps.at(-1)?.players[0];
@@ -474,8 +475,8 @@ describe('MockTransport bombs (FE-15)', () => {
     t.disconnect();
   });
 
-  it('starts a new round with roundStart some ticks after we died', () => {
-    const t = new MockTransport({ bots: 1 });
+  it('autoRematch: starts a new round with roundStart some ticks after we died', () => {
+    const t = new MockTransport({ bots: 1, autoRematch: true });
     const { got } = drive(t, 0);
     t.send({ seq: 1, dir: 'none', bomb: true });
     for (let i = 0; i < 40 + 61; i++) t.step();
@@ -490,6 +491,351 @@ describe('MockTransport bombs (FE-15)', () => {
     const t = new MockTransport({ bots: 3, seed: 3 });
     const { got, run } = drive(t, 400);
     run();
+    for (const msg of got.raw) {
+      expect(parseServerMessage(JSON.parse(JSON.stringify(msg))).ok).toBe(true);
+    }
+    t.disconnect();
+  });
+});
+
+describe('MockTransport round end and item pickup (FE-18)', () => {
+  type Msg = { t: string; kind?: string; [k: string]: unknown };
+  type RoundStats = {
+    id: string;
+    kills: number;
+    deaths: number;
+    selfKills: number;
+    curseKills: number;
+    transfers: number;
+    trollPoints: number;
+  };
+  type RoundEnd = Msg & { kind: 'roundEnd'; stats: RoundStats[] };
+  const kindOf = (m: unknown) => (m as Msg).kind;
+
+  /** We bomb our own spawn and stand still: we die at tick 40 and the only bot is left. */
+  function suicide(seed = 7, autoRematch = false) {
+    const t = new MockTransport({ bots: 1, seed, autoRematch });
+    const got = collect(t);
+    t.connect();
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    return { t, got };
+  }
+
+  it('sends roundEnd once, before the snapshot in which the round ended, with the survivor as winner', () => {
+    const { t, got } = suicide();
+    for (let i = 0; i < 45; i++) t.step();
+    const ends = got.raw.filter((m) => kindOf(m) === 'roundEnd');
+    expect(ends).toHaveLength(1);
+    const end = ends[0] as { winner: string | null; reason: string };
+    const endIndex = got.raw.indexOf(ends[0]);
+    const after = got.raw
+      .slice(endIndex)
+      .find((m) => (m as Msg).t === 'snapshot') as SnapshotMessage;
+    const alive = after.players.filter((p) => p.alive).map((p) => p.id);
+    expect(alive.length).toBeLessThanOrEqual(1);
+    expect(end.winner).toBe(alive[0] ?? null);
+    expect(end.reason).toBe(alive.length === 1 ? 'lastAlive' : 'allDead');
+    // the snapshot before it still had two players alive
+    const before = got.raw.slice(0, endIndex).filter((m) => (m as Msg).t === 'snapshot');
+    expect((before.at(-1) as SnapshotMessage).players.filter((p) => p.alive)).toHaveLength(2);
+    t.disconnect();
+  });
+
+  it('tracks bomb kills and resets round stats when a new round starts', () => {
+    const t = new MockTransport({ bots: 1, seed: 7, autoRematch: true });
+    const got = collect(t);
+    t.connect();
+    const players = (
+      t as unknown as {
+        players: { id: string; x: number; y: number; bot?: () => number }[];
+      }
+    ).players;
+    const bot = players[1];
+    if (!bot) throw new Error('expected one bot');
+    Object.assign(bot, { x: 2, y: 1, bot: undefined });
+
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    for (let i = 0; i < 40; i++) t.step();
+    const roundEnds = () => got.raw.filter((m) => kindOf(m) === 'roundEnd') as RoundEnd[];
+    expect(roundEnds()).toHaveLength(1);
+    expect(roundEnds()[0]?.stats).toEqual([
+      {
+        id: 'p1',
+        kills: 1,
+        deaths: 1,
+        selfKills: 1,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 1,
+      },
+      {
+        id: 'p2',
+        kills: 0,
+        deaths: 1,
+        selfKills: 0,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+    ]);
+
+    for (let i = 0; i < 60; i++) t.step();
+    t.send({ seq: 2, dir: 'none', bomb: true });
+    for (let i = 0; i < 40; i++) t.step();
+    expect(roundEnds()).toHaveLength(2);
+    expect(roundEnds()[1]?.stats).toEqual([
+      {
+        id: 'p2',
+        kills: 0,
+        deaths: 0,
+        selfKills: 0,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+      {
+        id: 'p1',
+        kills: 0,
+        deaths: 1,
+        selfKills: 1,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: 0,
+      },
+    ]);
+    t.disconnect();
+  });
+
+  it('after roundEnd the state stands still (only the tick moves) and input is ignored, like the server', () => {
+    const { t, got } = suicide();
+    for (let i = 0; i < 41; i++) t.step();
+    const ended = got.snaps.at(-1) as SnapshotMessage;
+    t.send({ seq: 2, dir: 'right', bomb: true });
+    for (let i = 0; i < 20; i++) t.step();
+    const later = got.snaps.at(-1) as SnapshotMessage;
+    expect(later.tick).toBe(ended.tick + 20);
+    expect(later.players).toEqual(ended.players);
+    expect(later.bombs).toEqual(ended.bombs);
+    expect(later.flames).toEqual(ended.flames);
+    expect(got.raw.filter((m) => kindOf(m) === 'roundEnd')).toHaveLength(1);
+    t.disconnect();
+  });
+
+  it('autoRematch: starts the next round 60 ticks after the one that sent roundEnd, and that round is not frozen', () => {
+    const { t, got } = suicide(7, true);
+    const kinds = () => got.raw.map(kindOf);
+    for (let i = 0; i < 40 && !kinds().includes('roundEnd'); i++) t.step();
+    expect(kinds()).toContain('roundEnd');
+    // the tick that sent roundEnd is the first of the 60
+    for (let i = 0; i < 58; i++) t.step();
+    expect(kinds()).not.toContain('roundStart');
+    t.step();
+    expect(kinds()).toContain('roundStart');
+    t.step(); // roundStart goes out after the snapshot of its tick, so the next snapshot is the new round's
+    expect(got.snaps.at(-1)?.players.every((p) => p.alive)).toBe(true);
+    // the new round is not frozen
+    t.send({ seq: 2, dir: 'right', bomb: false });
+    for (let i = 0; i < 8; i++) t.step();
+    expect(got.snaps.at(-1)?.players[0]?.x).toBeGreaterThan(1);
+    t.disconnect();
+  });
+
+  it('an item leaves the floor only when a living player stands on its tile', () => {
+    const t = new MockTransport({ bots: 3, seed: 15, autoRematch: true });
+    const got = collect(t);
+    t.connect();
+    for (let i = 0; i < 700; i++) t.step();
+    let prev: SnapshotMessage | undefined;
+    let pickups = 0;
+    for (const m of got.raw) {
+      if (kindOf(m) === 'roundStart') prev = undefined; // a new round clears the floor without a pickup
+      if ((m as Msg).t !== 'snapshot') continue;
+      const cur = m as SnapshotMessage;
+      for (const item of prev?.items ?? []) {
+        if (cur.items.some((i) => i.x === item.x && i.y === item.y)) continue;
+        pickups++;
+        const taker = cur.players.find(
+          (p) => p.alive && Math.round(p.x) === item.x && Math.round(p.y) === item.y,
+        );
+        expect(taker, `item at ${item.x},${item.y} vanished at tick ${cur.tick}`).toBeDefined();
+      }
+      prev = cur;
+    }
+    expect(pickups).toBeGreaterThan(0);
+    t.disconnect();
+  });
+
+  it('an item that nobody walks onto stays on the floor', () => {
+    const t = new MockTransport({ bots: 3, seed: 15 });
+    const got = collect(t);
+    t.connect();
+    for (let i = 0; i < 120; i++) t.step();
+    // by tick 120 a box has broken and dropped something that is still lying there
+    const seen = got.snaps.find((s) => s.items.length > 0);
+    expect(seen).toBeDefined();
+    t.disconnect();
+  });
+});
+
+describe('MockTransport kill events and rematch (FE-21, D35)', () => {
+  type Msg = { t: string; kind?: string; [k: string]: unknown };
+  const kindOf = (m: unknown) => (m as Msg).kind;
+  const ofKind = (raw: unknown[], kind: string) => raw.filter((m) => kindOf(m) === kind) as Msg[];
+
+  /** One bot standing next to our spawn (no wandering), a clock we move by hand. */
+  function duel(bots = 1) {
+    let now = 1_000_000;
+    const t = new MockTransport({ bots, seed: 7, clock: () => now });
+    const got = collect(t);
+    t.connect();
+    return {
+      t,
+      got,
+      setNow: (n: number) => {
+        now = n;
+      },
+      now: () => now,
+    };
+  }
+
+  /** We bomb our own spawn next to the bot: both die at tick 40. */
+  function bothDie() {
+    const d = duel();
+    const bot = (d.t as unknown as { players: { x: number; y: number; bot?: () => number }[] })
+      .players[1];
+    if (!bot) throw new Error('expected a bot');
+    Object.assign(bot, { x: 2, y: 1, bot: undefined });
+    d.t.send({ seq: 1, dir: 'none', bomb: true });
+    for (let i = 0; i < 40; i++) d.t.step();
+    return d;
+  }
+
+  it('sends one `kill` per death before roundEnd: self for our own bomb, bomb for the bot next to us', () => {
+    const { t, got } = bothDie();
+    const kills = ofKind(got.raw, 'kill');
+    expect(kills.map((k) => [k.killer, k.victim, k.cause])).toEqual([
+      ['p1', 'p1', 'self'],
+      ['p1', 'p2', 'bomb'],
+    ]);
+    const end = got.raw.findIndex((m) => kindOf(m) === 'roundEnd');
+    expect(end).toBeGreaterThan(got.raw.lastIndexOf(kills[1] as Msg) - 1);
+    expect(got.raw.indexOf(kills[0] as Msg)).toBeLessThan(end);
+    t.disconnect();
+  });
+
+  it('roundEnd stats are sorted like the server sorts them and titles are shared on ties, none at 0', () => {
+    const { t, got } = bothDie();
+    const end = ofKind(got.raw, 'roundEnd')[0] as Msg & { stats: { id: string }[] };
+    expect(end.stats.map((r) => r.id)).toEqual(['p1', 'p2']); // p1 has the แต้มเกรียน
+    expect(end.titles).toEqual([
+      { title: 'selfKiller', players: ['p1'], value: 1 },
+      { title: 'troll', players: ['p1'], value: 1 },
+    ]);
+    t.disconnect();
+  });
+
+  it('a round nobody scored in sends no titles', () => {
+    const d = duel(1);
+    // the bot dies to a bomb of its own and we do nothing: nobody has a point and nobody killed themselves except the bot
+    const players = (d.t as unknown as { players: { x: number; y: number; bot?: () => number }[] })
+      .players;
+    const bot = players[1];
+    if (!bot) throw new Error('expected a bot');
+    Object.assign(bot, { x: 11, y: 1, bot: undefined });
+    (d.t as unknown as { placeBomb(p: unknown): void }).placeBomb(bot);
+    for (let i = 0; i < 45; i++) d.t.step();
+    const end = ofKind(d.got.raw, 'roundEnd')[0] as Msg;
+    expect(end.winner).toBe('p1');
+    expect(end.titles).toEqual([{ title: 'selfKiller', players: ['p2'], value: 1 }]);
+    d.t.disconnect();
+  });
+
+  it('after roundEnd nothing restarts by itself: the round waits for the rematch', () => {
+    const { t, got } = bothDie();
+    for (let i = 0; i < 400; i++) t.step();
+    expect(ofKind(got.raw, 'roundStart')).toEqual([]);
+    expect(ofKind(got.raw, 'rematchStatus')).toEqual([]);
+    t.disconnect();
+  });
+
+  it('first press: status with us ready and a deadline 15 s away; a repeat press says nothing new', () => {
+    const { t, got, now } = bothDie();
+    t.rematch();
+    t.rematch();
+    expect(ofKind(got.raw, 'rematchStatus')).toEqual([
+      expect.objectContaining({ ready: ['p1'], deadline: now() + 15_000 }),
+    ]);
+    t.disconnect();
+  });
+
+  it('the bots follow one second apart, and everyone ready starts the round at once with a fresh table', () => {
+    const { t, got, now } = bothDie();
+    t.rematch();
+    for (let i = 0; i < 19; i++) t.step();
+    expect(ofKind(got.raw, 'roundStart')).toEqual([]);
+    t.step(); // 20th tick after the press: the bot is ready too
+    const statuses = ofKind(got.raw, 'rematchStatus');
+    expect(statuses.map((s) => s.ready)).toEqual([['p1'], ['p1', 'p2']]);
+    // the deadline did not move when the bot pressed later (D35)
+    expect(statuses.map((s) => s.deadline)).toEqual([now() + 15_000, now() + 15_000]);
+    const starts = ofKind(got.raw, 'roundStart');
+    expect(starts).toHaveLength(1);
+    t.step();
+    expect(got.snaps.at(-1)?.players.every((p) => p.alive)).toBe(true);
+    t.disconnect();
+  });
+
+  it('the deadline starts the round even when not everyone is ready (15 s after the first press)', () => {
+    const { t, got, setNow, now } = bothDie();
+    const t0 = now();
+    // the bot is ready one second after us; the deadline comes first
+    t.rematch();
+    for (let i = 0; i < 5; i++) t.step();
+    expect(ofKind(got.raw, 'roundStart')).toEqual([]);
+    setNow(t0 + 15_001);
+    t.step();
+    expect(ofKind(got.raw, 'roundStart')).toHaveLength(1);
+    t.disconnect();
+  });
+
+  it('a press while the round is still running is ignored', () => {
+    const d = duel(1);
+    d.t.rematch();
+    for (let i = 0; i < 30; i++) d.t.step();
+    expect(ofKind(d.got.raw, 'rematchStatus')).toEqual([]);
+    d.t.disconnect();
+  });
+
+  it('the next round can be ended and rematched again (state is cleared on every start)', () => {
+    const { t, got } = bothDie();
+    t.rematch();
+    for (let i = 0; i < 20; i++) t.step();
+    expect(ofKind(got.raw, 'roundStart')).toHaveLength(1);
+    // round 2 ends in a draw by timeout once we have watched our own death for a while
+    t.send({ seq: 2, dir: 'none', bomb: true });
+    for (let i = 0; i < 40 + 61; i++) t.step();
+    expect(ofKind(got.raw, 'roundEnd').length).toBeGreaterThanOrEqual(2);
+    t.rematch();
+    expect(ofKind(got.raw, 'rematchStatus').at(-1)).toMatchObject({ ready: ['p1'] });
+    t.disconnect();
+  });
+
+  it('when we die and the bots keep going, the round ends as a timeout draw after a while', () => {
+    const t = new MockTransport({ bots: 3, seed: 3 });
+    const got = collect(t);
+    t.connect();
+    t.send({ seq: 1, dir: 'none', bomb: true });
+    for (let i = 0; i < 40 + 61; i++) t.step();
+    const ends = ofKind(got.raw, 'roundEnd');
+    expect(ends).toHaveLength(1);
+    expect(ofKind(got.raw, 'roundStart')).toEqual([]);
+    t.disconnect();
+  });
+
+  it('everything in the rematch flow passes parseServerMessage', () => {
+    const { t, got } = bothDie();
+    t.rematch();
+    for (let i = 0; i < 25; i++) t.step();
     for (const msg of got.raw) {
       expect(parseServerMessage(JSON.parse(JSON.stringify(msg))).ok).toBe(true);
     }

@@ -1,17 +1,13 @@
 import type { PlayerState } from '@booberman/protocol';
+import { SheetFrame } from '../assets/sheetFrames';
 
 export type Facing = 'down' | 'up' | 'left' | 'right';
 
 export const FACINGS: readonly Facing[] = ['down', 'up', 'left', 'right'];
 /** Frame in the player sheet when standing still (down, up, left, right). */
-export const IDLE_FRAME: Record<Facing, number> = { down: 0, up: 1, left: 2, right: 3 };
+export const IDLE_FRAME: Record<Facing, number> = SheetFrame.idle;
 /** First / last frame of each walk cycle in the player sheet. */
-export const WALK_FRAMES: Record<Facing, readonly [number, number]> = {
-  down: [4, 5],
-  up: [6, 7],
-  left: [8, 9],
-  right: [10, 11],
-};
+export const WALK_FRAMES: Record<Facing, readonly [number, number]> = SheetFrame.walk;
 export const walkAnimKey = (facing: Facing): string => `walk-${facing}`;
 
 /** Cosmetic only: how long the death animation plays, in server ticks (0.4 s). */
@@ -23,6 +19,8 @@ export interface PlayerAnim {
   /** 'alive' → draw normally · 'dying' with progress 0..1 → shrink / spin · 'gone' → draw nothing. */
   phase: 'alive' | 'dying' | 'gone';
   progress: number;
+  /** A dead player playing on as a ghost (BE-46): drawn, never dying / gone. */
+  ghost: boolean;
 }
 
 interface Track {
@@ -50,7 +48,7 @@ export class PlayerAnimTracker {
       if (!t) {
         t = { x: p.x, y: p.y, facing: 'down', moving: false };
         // First sight of a corpse (joined late / new tab): don't replay the death.
-        if (!p.alive) t.diedAt = tick - DEATH_TICKS;
+        if (!p.alive && !p.ghost) t.diedAt = tick - DEATH_TICKS;
         this.tracks.set(p.id, t);
       }
       const dx = p.x - t.x;
@@ -60,7 +58,8 @@ export class PlayerAnimTracker {
       t.x = p.x;
       t.y = p.y;
 
-      if (p.alive) {
+      // a ghost teleports to the rim on the tick it dies: no death spin, it simply turns into a ghost
+      if (p.alive || p.ghost) {
         t.diedAt = undefined;
       } else if (t.diedAt === undefined) {
         t.diedAt = tick;
@@ -72,7 +71,13 @@ export class PlayerAnimTracker {
         progress = Math.min(1, Math.max(0, (tick - t.diedAt) / DEATH_TICKS));
         phase = progress >= 1 ? 'gone' : 'dying';
       }
-      out.set(p.id, { facing: t.facing, moving: t.moving && phase === 'alive', phase, progress });
+      out.set(p.id, {
+        facing: t.facing,
+        moving: t.moving && phase === 'alive',
+        phase,
+        progress,
+        ghost: p.ghost === true,
+      });
     }
     for (const id of this.tracks.keys()) if (!seen.has(id)) this.tracks.delete(id);
     return out;

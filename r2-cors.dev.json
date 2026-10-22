@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "https://booberman-dev.miryn.workers.dev",
+          "http://localhost:5173",
+          "http://localhost:8787"
+        ],
+        "methods": ["GET", "HEAD"],
+        "headers": ["Range"]
+      },
+      "exposeHeaders": ["Content-Length", "Content-Type", "ETag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}

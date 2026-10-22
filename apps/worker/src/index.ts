@@ -1,10 +1,12 @@
 import {
   HEALTH_PATH,
   type HealthResponse,
+  LEADERBOARD_PATH,
   PROTOCOL_VERSION,
   ROOMS_PATH,
   RoomId,
 } from '@booberman/protocol';
+import { leaderboard } from './api/leaderboard';
 import { createRoom, listRooms } from './api/rooms';
 import { createRouter, jsonError } from './http/router';
 
@@ -18,6 +20,7 @@ const api = createRouter<Env>({
   [HEALTH_PATH]: {
     GET: () => Response.json({ ok: true, protocol: PROTOCOL_VERSION } satisfies HealthResponse),
   },
+  [LEADERBOARD_PATH]: { GET: (request, env, ctx) => leaderboard(request, env, ctx) },
   [ROOMS_PATH]: {
     GET: (_request, env) => listRooms(env),
     POST: (request, env) => createRoom(request, env),

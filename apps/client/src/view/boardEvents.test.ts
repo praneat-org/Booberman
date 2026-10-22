@@ -162,3 +162,166 @@ describe('roster (HUD nicknames)', () => {
     expect(round.latest).toBeUndefined();
   });
 });
+
+describe('sounds follow the round view (FE-18)', () => {
+  /** Like `feed`, but returns the sounds that frame called for. */
+  const hear = (round: RoundView, snap: Snapshot) => {
+    round.applySnapshot(snap, snap.tick * 50);
+    return round.frame(snap.tick * 50);
+  };
+  const quiet = (tick: number, players: PlayerState[] = [p(1, 1)]): Snapshot => ({
+    ...exampleServerMessages.snapshot,
+    tick,
+    players,
+    bombs: [],
+    flames: [],
+    items: [],
+  });
+
+  it('frame() returns the sounds of the snapshot just drawn', () => {
+    const round = newRound();
+    expect(hear(round, quiet(1))).toEqual([]);
+    expect(hear(round, { ...quiet(2), bombs: [{ x: 3, y: 3, fuse: 40 }] })).toEqual(['bombPlace']);
+    expect(hear(round, { ...quiet(3), flames: [[3, 3]] })).toEqual(['explode']);
+  });
+
+  it('roundEnd with a winner plays win when the snapshot after the newest received is drawn', () => {
+    const round = newRound();
+    hear(round, quiet(10));
+    expect(applyBoardEvent(exampleServerMessages.roundEndWin, round)).toBe(false);
+    expect(round.frame(10 * 50)).toEqual([]);
+    expect(hear(round, quiet(11))).toEqual(['win']);
+    expect(hear(round, quiet(12))).toEqual([]);
+  });
+
+  it('a draw makes no win sound', () => {
+    for (const draw of [
+      exampleServerMessages.roundEndDraw,
+      exampleServerMessages.roundEndTimeout,
+    ]) {
+      const round = newRound();
+      hear(round, quiet(10));
+      applyBoardEvent(draw, round);
+      expect(hear(round, quiet(11))).toEqual([]);
+    }
+  });
+
+  it('roundStart and welcome reset the tracker: the old round vanishing is not heard, a waiting win is dropped', () => {
+    for (const reset of [
+      (r: RoundView) => applyBoardEvent(exampleServerMessages.roundStart, r),
+      (r: RoundView) => applyWelcome({ grid: exampleGrid(), playerId: 'p1' }, r, 'Hi'),
+    ]) {
+      const round = newRound();
+      hear(round, {
+        ...quiet(10),
+        bombs: [{ x: 3, y: 3, fuse: 5 }],
+        items: [{ x: 5, y: 1, kind: 'curse' }],
+      });
+      applyBoardEvent(exampleServerMessages.roundEndWin, round);
+      reset(round);
+      // a snapshot that, next to the old round's, would read as an explosion + a pickup + a win
+      expect(hear(round, { ...quiet(11), flames: [[3, 3]] })).toEqual([]);
+      expect(hear(round, quiet(12))).toEqual([]);
+    }
+  });
+});
+
+describe('kill feed, end screen and rematch (FE-21)', () => {
+  /** A joined room: we are p1, Bob is p2. */
+  const room = () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p1' }, round, 'มิ้นท์');
+    applyBoardEvent(
+      { ...exampleServerMessages.playerJoined, playerId: 'p2', nickname: 'Bob' },
+      round,
+    );
+    return round;
+  };
+
+  it('welcome records who we are, for the "you" marks of the end screen', () => {
+    expect(room().selfId).toBe('p1');
+  });
+
+  it('a kill event becomes a line of the feed, stamped with the clock we pass in', () => {
+    const round = room();
+    expect(applyBoardEvent(exampleServerMessages.killBomb, round, 500)).toBe(false);
+    const [line] = round.killFeed.visible(600);
+    expect(line).toMatchObject({ killerName: 'มิ้นท์', victimName: 'Bob', cause: 'bomb', at: 500 });
+  });
+
+  it('roundEnd builds the end screen from the server table, and it survives later snapshots', () => {
+    const round = room();
+    expect(round.end).toBeUndefined();
+    expect(applyBoardEvent(exampleServerMessages.roundEndWin, round)).toBe(false);
+    expect(round.end?.rows.map((r) => r.id)).toEqual(['p2', 'p1', 'p3']);
+    expect(round.end?.rows.find((r) => r.id === 'p1')?.isSelf).toBe(true);
+    // the board is frozen / a newcomer spawns alive: that is no reason to drop the table
+    feed(round, busy(11, [p(1, 1)]));
+    feed(round, busy(12, [p(1, 1)]));
+    expect(round.end).toBeDefined();
+  });
+
+  it('a player who leaves while the screen is up keeps their name in the table', () => {
+    const round = room();
+    applyBoardEvent(exampleServerMessages.roundEndDraw, round);
+    applyBoardEvent({ ...exampleServerMessages.playerLeft, playerId: 'p2' }, round);
+    expect(round.end?.rows.map((r) => r.name)).toEqual(['มิ้นท์', 'Bob']);
+  });
+
+  it('rematchStatus is kept as sent; a later roundEnd (a new round that ended) clears the old one', () => {
+    const round = room();
+    applyBoardEvent(exampleServerMessages.roundEndWin, round);
+    applyBoardEvent(exampleServerMessages.rematchStatus, round);
+    expect(round.rematch).toEqual({ ready: ['p1', 'p3'], deadline: 1739000015000 });
+    applyBoardEvent(exampleServerMessages.roundEndWin, round);
+    expect(round.rematch).toBeUndefined();
+  });
+
+  it('a newcomer sees roundEnd then rematchStatus after welcome, and both stay (join during the end screen)', () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p3' }, round, 'Cat');
+    applyBoardEvent(exampleServerMessages.roundEndWin, round);
+    applyBoardEvent(exampleServerMessages.rematchStatus, round);
+    expect(round.end?.rows.find((r) => r.id === 'p3')?.isSelf).toBe(true);
+    expect(round.rematch?.ready).toEqual(['p1', 'p3']);
+  });
+
+  it('roundStart (the rematch started) clears the end screen, the rematch status and the kill feed', () => {
+    const round = room();
+    applyBoardEvent(exampleServerMessages.killBomb, round, 0);
+    applyBoardEvent(exampleServerMessages.roundEndWin, round);
+    applyBoardEvent(exampleServerMessages.rematchStatus, round);
+    expect(applyBoardEvent(exampleServerMessages.roundStart, round)).toBe(true);
+    expect(round.end).toBeUndefined();
+    expect(round.rematch).toBeUndefined();
+    expect(round.killFeed.visible(1)).toEqual([]);
+    // the roster is per connection: the players are still there for the next kill
+    expect(round.roster.nameOf('p2')).toBe('Bob');
+  });
+
+  it('BE-57: rematchStatus with no roundEnd before it = the waiting room; roundStart ends it', () => {
+    const round = newRound();
+    applyWelcome({ grid: exampleGrid(), playerId: 'p1' }, round, 'มิ้นท์');
+    expect(round.waiting).toBe(false);
+    applyBoardEvent({ ...exampleServerMessages.rematchStatus, ready: [], deadline: 0 }, round);
+    expect(round.waiting).toBe(true);
+    applyBoardEvent(exampleServerMessages.roundStart, round);
+    expect(round.waiting).toBe(false);
+    // the end screen is not the waiting room
+    applyBoardEvent(exampleServerMessages.roundEndWin, round);
+    applyBoardEvent(exampleServerMessages.rematchStatus, round);
+    expect(round.waiting).toBe(false);
+  });
+
+  it('welcome (a new connection) clears them too, and forgets who we were until it says who we are', () => {
+    const round = room();
+    applyBoardEvent(exampleServerMessages.killBomb, round, 0);
+    applyBoardEvent(exampleServerMessages.roundEndWin, round);
+    applyBoardEvent(exampleServerMessages.rematchStatus, round);
+    applyWelcome({ grid: exampleGrid(), playerId: 'p2' }, round, 'Bob');
+    expect(round.end).toBeUndefined();
+    expect(round.rematch).toBeUndefined();
+    expect(round.killFeed.visible(1)).toEqual([]);
+    expect(round.selfId).toBe('p2');
+  });
+});

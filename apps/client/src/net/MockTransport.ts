@@ -29,6 +29,12 @@ export interface MockTransportOptions {
   /** Extra random one-way delay 0..jitterMs (order is kept, like a WebSocket). */
   jitterMs?: number;
   tickMs?: number;
+  /**
+   * The old shortcut: a finished round (or one we died in) starts the next one by itself after
+   * 60 ticks, with no `rematch` needed. Off by default: the mock then behaves like the server (D35)
+   * and waits on the end screen until we press "play again".
+   */
+  autoRematch?: boolean;
   /** Whole-ms clock for the delay maths (tests drive it); defaults to `Date.now`. */
   clock?: () => number;
 }
@@ -57,8 +63,14 @@ const FLAME_TICKS = 10;
 const FLAME_RANGE = 2;
 const MAX_BOMBS = 2;
 const ITEM_DROP_CHANCE = 0.35;
-/** After we die the mock waits this long, then starts a new round (like a rematch). */
-const RESTART_AFTER_DEAD_TICKS = 60;
+/** `autoRematch`: after we die, or after the round ended, the mock waits this long, then starts a new round. */
+const RESTART_AFTER_TICKS = 60;
+/** D9: the round restarts when everyone is ready or this long after the first press. */
+const REMATCH_WINDOW_MS = 15_000;
+/** Once we press "play again" the bots follow, one every second. */
+const BOT_READY_EVERY_TICKS = 20;
+/** Mock credit: a bomb kill is worth this many แต้มเกรียน (the server's `trollPoints.bomb`). */
+const BOMB_TROLL_POINTS = 1;
 const BOT_BOMB_CHANCE = 0.04;
 
 /** mulberry32 — same family as the server's PRNG, so mock bots are reproducible. */
@@ -89,12 +101,21 @@ interface MockPlayer {
   alive: boolean;
   /** `bomb: true` is a one-shot (D27); consumed by the next tick. */
   wantsBomb: boolean;
+  kills: number;
+  deaths: number;
+  selfKills: number;
+  trollPoints: number;
 }
 
 interface MockBomb {
   x: number;
   y: number;
   fuse: number;
+  owner: PlayerId;
+}
+
+interface MockFlame {
+  ttl: number;
   owner: PlayerId;
 }
 
@@ -143,16 +164,23 @@ type Listeners = {
 /**
  * Fake server for `?mock=1`: `welcome` + player events, then a `snapshot` every tick (20 Hz).
  * Our player follows the held direction (D27); bots wander. Bombs, flames, boxes breaking, item
- * drops and deaths are faked here so the client can be drawn without the real rules.
+ * drops, picking items up, deaths and the end of the round (`roundEnd` once one player or none is
+ * left) are faked here so the client can be drawn and heard without the real rules. Like the server
+ * (D35) it sends a `kill` per death, a sorted `roundEnd` table with titles, and then waits for
+ * `rematch()`: `rematchStatus` on every press, the bots following a second apart, and a new
+ * `roundStart` when everyone is ready or 15 s after the first press (`autoRematch` skips all that).
  * Everything it emits is run through `parseServerMessage` like a real socket would be.
  */
 export class MockTransport implements Transport {
   private grid = exampleGrid();
   private round = 0;
   private bombs: MockBomb[] = [];
-  private flames = new Map<string, number>();
+  private flames = new Map<string, MockFlame>();
   private items: { x: number; y: number; kind: 'curse' }[] = [];
   private deadTicks = 0;
+  /** `roundEnd` was sent: like the server, the state stands still until the next round starts. */
+  private ended = false;
+  private endedTicks = 0;
   private readonly ruleRng: () => number;
   private readonly players: MockPlayer[];
   private readonly listeners: Listeners = {
@@ -165,6 +193,11 @@ export class MockTransport implements Transport {
   };
   /** `in` = client→server, `out` = server→client. */
   private readonly lines = { in: newDelayLine(), out: newDelayLine() };
+  /** Ready for the rematch (D9), cleared when a round starts. */
+  private readonly rematchReady = new Set<PlayerId>();
+  /** Epoch ms when the round starts anyway; 0 = nobody pressed yet. */
+  private rematchDeadline = 0;
+  private botReadyTicks = 0;
   private readonly opts: Required<Omit<MockTransportOptions, 'clock'>>;
   private readonly clock: () => number;
   private readonly jitterRng: () => number;
@@ -179,6 +212,7 @@ export class MockTransport implements Transport {
       latencyMs: Math.max(0, options.latencyMs ?? 0),
       jitterMs: Math.max(0, options.jitterMs ?? 0),
       tickMs: options.tickMs ?? 50,
+      autoRematch: options.autoRematch ?? false,
     };
     this.clock = options.clock ?? Date.now;
     this.jitterRng = createRng(this.opts.seed ^ 0x9e3779b9);
@@ -220,6 +254,8 @@ export class MockTransport implements Transport {
       playerId: SELF_ID,
       seed: this.opts.seed,
       grid: this.grid,
+      // BE-44: the real server issues one per welcome; the mock has no connection to lose, so any value does
+      token: 'mock-reconnect-token',
     });
     for (const p of this.players) {
       if (p.nickname === undefined) continue;
@@ -261,20 +297,38 @@ export class MockTransport implements Transport {
     this.afterDelay('in', () => this.toClient({ v: PROTOCOL_VERSION, t: 'pong', ts }));
   }
 
+  /**
+   * Like the server (D35): ignored while a round runs, a repeat press changes nothing, the first press
+   * starts the 15 s countdown, and everyone ready starts the round at once.
+   */
+  rematch(): void {
+    const sentInRound = this.round;
+    this.afterDelay('in', () => {
+      if (!this.ended || sentInRound !== this.round || this.rematchReady.has(SELF_ID)) return;
+      this.markReady(SELF_ID);
+      this.startRoundIfReady();
+    });
+  }
+
   /** One server tick: move everybody, then broadcast a full snapshot. Public so tests can drive it. */
   step(): void {
     this.tick++;
-    for (const p of this.players) {
-      if (!p.alive) continue;
-      if (p.bot && !p.walkDir) {
-        p.heldDir = BOT_DIRS[Math.floor(p.bot() * BOT_DIRS.length)] ?? 'none';
-        if (this.ruleRng() < BOT_BOMB_CHANCE) p.wantsBomb = true;
+    // a finished round stands still, only the tick moves (D32)
+    if (!this.ended) {
+      for (const p of this.players) {
+        if (!p.alive) continue;
+        if (p.bot && !p.walkDir) {
+          p.heldDir = BOT_DIRS[Math.floor(p.bot() * BOT_DIRS.length)] ?? 'none';
+          if (this.ruleRng() < BOT_BOMB_CHANCE) p.wantsBomb = true;
+        }
+        this.move(p);
+        if (p.wantsBomb) this.placeBomb(p);
+        p.wantsBomb = false;
       }
-      this.move(p);
-      if (p.wantsBomb) this.placeBomb(p);
-      p.wantsBomb = false;
+      this.burn();
+      this.pickUpItems();
+      this.checkRoundEnd();
     }
-    this.burn();
     this.toClient({
       v: PROTOCOL_VERSION,
       t: 'snapshot',
@@ -305,9 +359,9 @@ export class MockTransport implements Transport {
 
   /** Count fuses down, explode (chain reaction), age flames, kill whoever stands in fire. */
   private burn(): void {
-    for (const [key, ttl] of this.flames) {
-      if (ttl <= 1) this.flames.delete(key);
-      else this.flames.set(key, ttl - 1);
+    for (const [key, flame] of this.flames) {
+      if (flame.ttl <= 1) this.flames.delete(key);
+      else this.flames.set(key, { ...flame, ttl: flame.ttl - 1 });
     }
     for (const b of this.bombs) b.fuse--;
     for (;;) {
@@ -317,19 +371,106 @@ export class MockTransport implements Transport {
       this.explode(next);
     }
     for (const p of this.players) {
-      if (p.alive && this.flames.has(`${Math.round(p.x)},${Math.round(p.y)}`)) p.alive = false;
+      if (!p.alive) continue;
+      const flame = this.flames.get(`${Math.round(p.x)},${Math.round(p.y)}`);
+      if (!flame) continue;
+      p.alive = false;
+      p.deaths++;
+      const self = flame.owner === p.id;
+      if (self) p.selfKills++;
+      else {
+        const owner = this.players.find((candidate) => candidate.id === flame.owner);
+        if (owner) {
+          owner.kills++;
+          owner.trollPoints += BOMB_TROLL_POINTS;
+        }
+      }
+      // D35: one `kill` per death, in player order, before `roundEnd` of the same tick
+      this.toClient({
+        v: PROTOCOL_VERSION,
+        t: 'event',
+        kind: 'kill',
+        killer: flame.owner,
+        victim: p.id,
+        cause: self ? 'self' : 'bomb',
+      });
     }
   }
 
+  /** Whoever stands on an item takes it (nearest tile, like the bombs and flames). The mock gives no curse. */
+  private pickUpItems(): void {
+    for (const p of this.players) {
+      if (!p.alive) continue;
+      const x = Math.round(p.x);
+      const y = Math.round(p.y);
+      this.items = this.items.filter((i) => i.x !== x || i.y !== y);
+    }
+  }
+
+  /** One player left = winner, nobody left = draw. Sent before the snapshot of that tick, like the server. */
+  private checkRoundEnd(): void {
+    const alive = this.players.filter((p) => p.alive);
+    if (alive.length > 1) return;
+    this.endRound(alive[0]?.id ?? null, alive.length === 1 ? 'lastAlive' : 'allDead');
+  }
+
+  /**
+   * `roundEnd` with the table the server would send (D35): sorted by แต้มเกรียน, then kills (high
+   * first), then deaths (low first), then id; a title goes to everyone tied on the highest value,
+   * and not at all when that value is 0. Only the titles the mock can earn (no curse, no kick).
+   */
+  private endRound(winner: PlayerId | null, reason: 'lastAlive' | 'allDead' | 'timeout'): void {
+    this.ended = true;
+    const stats = this.players
+      .map((p) => ({
+        id: p.id,
+        kills: p.kills,
+        deaths: p.deaths,
+        selfKills: p.selfKills,
+        curseKills: 0,
+        transfers: 0,
+        trollPoints: p.trollPoints,
+      }))
+      .sort(
+        (a, b) =>
+          b.trollPoints - a.trollPoints ||
+          b.kills - a.kills ||
+          a.deaths - b.deaths ||
+          a.id.localeCompare(b.id),
+      );
+    const titles: { title: 'selfKiller' | 'troll'; players: PlayerId[]; value: number }[] = [];
+    for (const [title, field] of [
+      ['selfKiller', 'selfKills'],
+      ['troll', 'trollPoints'],
+    ] as const) {
+      const value = Math.max(...stats.map((r) => r[field]));
+      if (value <= 0) continue;
+      const holders = stats
+        .filter((r) => r[field] === value)
+        .map((r) => r.id)
+        .sort();
+      titles.push({ title, players: holders, value });
+    }
+    this.toClient({
+      v: PROTOCOL_VERSION,
+      t: 'event',
+      kind: 'roundEnd',
+      winner,
+      reason,
+      stats,
+      titles,
+    });
+  }
+
   private explode(bomb: MockBomb): void {
-    this.flames.set(`${bomb.x},${bomb.y}`, FLAME_TICKS);
+    this.ignite(`${bomb.x},${bomb.y}`, bomb.owner);
     for (const [dx, dy] of Object.values(DELTA)) {
       for (let i = 1; i <= FLAME_RANGE; i++) {
         const x = bomb.x + dx * i;
         const y = bomb.y + dy * i;
         const tile = tileAt(this.grid, x, y);
         if (tile === undefined || tile === '#') break;
-        this.flames.set(`${x},${y}`, FLAME_TICKS);
+        this.ignite(`${x},${y}`, bomb.owner);
         if (tile === 'x') {
           this.breakBox(x, y);
           break;
@@ -343,6 +484,11 @@ export class MockTransport implements Transport {
     }
   }
 
+  private ignite(key: string, owner: PlayerId): void {
+    const existing = this.flames.get(key);
+    this.flames.set(key, { ttl: FLAME_TICKS, owner: existing?.owner ?? owner });
+  }
+
   private breakBox(x: number, y: number): void {
     const i = y * GRID_WIDTH + x;
     this.grid = `${this.grid.slice(0, i)}.${this.grid.slice(i + 1)}`;
@@ -350,12 +496,59 @@ export class MockTransport implements Transport {
     if (this.ruleRng() < ITEM_DROP_CHANCE) this.items.push({ x, y, kind: 'curse' });
   }
 
-  /** Everybody (or just we) dead for a while → new round, like a rematch. */
+  /**
+   * After every tick. `autoRematch`: we are dead for a while, or the round has ended for a while,
+   * so a new round starts by itself. Otherwise the round only ends through `roundEnd`, and the next
+   * one starts through the rematch (D9): the bots press after us, then everyone-ready or the deadline.
+   */
   private maybeRestart(): void {
     const me = this.players[0];
     this.deadTicks = me && !me.alive ? this.deadTicks + 1 : 0;
-    if (this.deadTicks < RESTART_AFTER_DEAD_TICKS) return;
+    this.endedTicks = this.ended ? this.endedTicks + 1 : 0;
+    if (this.opts.autoRematch) {
+      if (this.deadTicks >= RESTART_AFTER_TICKS || this.endedTicks >= RESTART_AFTER_TICKS) {
+        this.startRound();
+      }
+      return;
+    }
+    // the bots may never finish each other off: once we have watched for a while, call it a draw
+    if (!this.ended && this.deadTicks >= RESTART_AFTER_TICKS) this.endRound(null, 'timeout');
+    if (!this.ended || !this.rematchReady.has(SELF_ID)) return;
+    this.botReadyTicks++;
+    if (this.botReadyTicks % BOT_READY_EVERY_TICKS === 0) {
+      const next = this.players.find((p) => p.id !== SELF_ID && !this.rematchReady.has(p.id));
+      if (next) this.markReady(next.id);
+    }
+    this.startRoundIfReady();
+  }
+
+  /** Someone is ready: the first one starts the 15 s countdown; everyone gets the new status. */
+  private markReady(id: PlayerId): void {
+    this.rematchReady.add(id);
+    if (this.rematchDeadline === 0) this.rematchDeadline = this.clock() + REMATCH_WINDOW_MS;
+    this.toClient({
+      v: PROTOCOL_VERSION,
+      t: 'event',
+      kind: 'rematchStatus',
+      ready: this.players.filter((p) => this.rematchReady.has(p.id)).map((p) => p.id),
+      deadline: this.rematchDeadline,
+    });
+  }
+
+  private startRoundIfReady(): void {
+    const everyone = this.players.every((p) => this.rematchReady.has(p.id));
+    if (everyone || (this.rematchDeadline > 0 && this.clock() >= this.rematchDeadline)) {
+      this.startRound();
+    }
+  }
+
+  private startRound(): void {
     this.deadTicks = 0;
+    this.endedTicks = 0;
+    this.ended = false;
+    this.rematchReady.clear();
+    this.rematchDeadline = 0;
+    this.botReadyTicks = 0;
     this.round++;
     this.grid = exampleGrid();
     this.bombs = [];
@@ -370,6 +563,10 @@ export class MockTransport implements Transport {
         walkDir: undefined,
         heldDir: 'none',
         wantsBomb: false,
+        kills: 0,
+        deaths: 0,
+        selfKills: 0,
+        trollPoints: 0,
       });
     }
     this.toClient({
@@ -392,6 +589,10 @@ export class MockTransport implements Transport {
       bot,
       alive: true,
       wantsBomb: false,
+      kills: 0,
+      deaths: 0,
+      selfKills: 0,
+      trollPoints: 0,
     };
   }
 

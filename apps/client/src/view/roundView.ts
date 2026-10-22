@@ -1,8 +1,13 @@
 import type { PlayerId } from '@booberman/protocol';
+import type { SfxName } from '../audio/sfx';
+import { SfxTracker } from '../audio/sfxTracker';
 import type { SnapshotMessage } from '../net/Transport';
 import { BoxField } from './boardView';
+import { BombSlideTween } from './bombSlide';
+import type { EndView, RematchStatus } from './endView';
 import { toBombViews, toFlameViews, toItemViews } from './entityViews';
 import { Roster } from './hudView';
+import { KillFeed } from './killFeed';
 import { type PlayerAnim, PlayerAnimTracker } from './playerAnim';
 import { type PlayerView, toPlayerViews } from './playerViews';
 import { DEFAULT_INTERPOLATION_DELAY_MS, SnapshotBuffer } from './snapshotBuffer';
@@ -25,12 +30,37 @@ export class RoundView {
   readonly boxes = new BoxField();
   readonly animTracker = new PlayerAnimTracker();
   readonly buffer: SnapshotBuffer;
+  /** Which sounds the drawn snapshots call for (FE-18); compares each drawn snapshot with the one before. */
+  readonly sfx = new SfxTracker();
   /** Nicknames for the HUD. Per connection, not per round: only `resetSession` clears it. */
   readonly roster = new Roster();
+  /** Our own id, from `welcome`; per connection like the roster. */
+  selfId: PlayerId | undefined;
+  /** Who killed whom this round (FE-21); the corner list reads it. */
+  readonly killFeed = new KillFeed();
+  /**
+   * The end screen (FE-21): set by `roundEnd`, gone when the next round starts. It is the server's
+   * table, never ours: a snapshot after `roundEnd` (a frozen board, a newcomer's spawn) does not touch it.
+   */
+  end: EndView | undefined;
+  /** Who pressed "play again" (or "ready" while waiting) and the server's deadline. */
+  rematch: RematchStatus | undefined;
   /** What is being drawn: the buffered snapshot at the render time, players interpolated. */
   latest: SnapshotMessage | undefined;
   playerAnims: Map<string, PlayerAnim> = new Map();
   renderTick: number | undefined;
+  /** Where sliding bombs are drawn this frame (FE-23). */
+  readonly bombSlides = new BombSlideTween();
+  private bombDrawn: { x: number; y: number }[] = [];
+
+  /**
+   * BE-57: the room waits for its first round. The server says so by sending `rematchStatus` with
+   * no `roundEnd` before it; `roundStart` (reset) ends it. A late joiner into a running round gets
+   * no `rematchStatus`, so it never sees this screen.
+   */
+  get waiting(): boolean {
+    return this.rematch !== undefined && this.end === undefined;
+  }
 
   constructor(delayMs: number = DEFAULT_INTERPOLATION_DELAY_MS) {
     this.buffer = new SnapshotBuffer({ delayMs });
@@ -39,15 +69,22 @@ export class RoundView {
   reset(grid?: string): void {
     if (grid !== undefined) this.boxes.reset(grid);
     this.animTracker.reset();
+    this.sfx.reset();
+    this.killFeed.clear();
+    this.end = undefined;
+    this.rematch = undefined;
     this.buffer.reset();
     this.latest = undefined;
     this.renderTick = undefined;
     this.playerAnims = new Map();
+    this.bombSlides.reset();
+    this.bombDrawn = [];
   }
 
   /** `welcome`: a new connection, so the roster starts empty too (joins are replayed after it). */
   resetSession(grid?: string): void {
     this.roster.clear();
+    this.selfId = undefined;
     this.reset(grid);
   }
 
@@ -56,13 +93,18 @@ export class RoundView {
     this.buffer.push(msg, recvAt);
   }
 
-  /** Once per rendered frame: move `latest` to the render time (nothing before the first snapshot). */
-  frame(now: number): void {
+  /**
+   * Once per rendered frame: move `latest` to the render time (nothing before the first snapshot).
+   * Returns the sounds that the newly drawn snapshot calls for (usually none).
+   */
+  frame(now: number): SfxName[] {
     const sample = this.buffer.sample(now);
-    if (!sample) return;
+    if (!sample) return [];
     this.latest = { ...sample.base, players: sample.players };
     this.renderTick = sample.renderTick;
     this.playerAnims = this.animTracker.update(sample.players, sample.renderTick);
+    this.bombDrawn = this.bombSlides.update(sample.base.bombs, sample.base.tick, sample.renderTick);
+    return this.sfx.observe(this.latest);
   }
 
   /** What may be on screen right now: nothing until the first snapshot of the current round. */
@@ -75,7 +117,7 @@ export class RoundView {
       if (anim && anim.phase !== 'gone') players.push({ view, anim });
     }
     return {
-      bombs: toBombViews(s.bombs),
+      bombs: toBombViews(s.bombs, this.bombDrawn),
       flames: toFlameViews(s.flames, s.tick),
       items: toItemViews(s.items),
       players,

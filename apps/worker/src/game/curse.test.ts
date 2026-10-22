@@ -19,6 +19,12 @@ import { DEPARTED } from './types';
 
 const CFG = DEFAULT_CONFIG;
 
+describe('production curse duration', () => {
+  it('uses the six-second duration selected for CAR-3797', () => {
+    expect(CFG.curseTicks).toBe(120);
+  });
+});
+
 /** Same picture boards as bombs.test.ts: `#` wall, `x` box, `.` floor, `A`-`D` = p1-p4. */
 function board(rows: string[], extra: Partial<GameState> = {}): GameState {
   const found: [PlayerId, number, number][] = [];
@@ -178,11 +184,11 @@ describe('picking up a curse', () => {
     expect(curseSourceOf(replaced, p1)).toBe(DEPARTED);
   });
 
-  it('a kick item is used up with no effect', () => {
+  it('a kick item is used up and gives the kick, not a curse (kick.test.ts)', () => {
     const s = board(['#A..#'], { items: [item(1, 1, 'p2', 'kick')] });
     const { state } = tick(s);
     expect(state.items).toEqual([]);
-    expect(get(state, 'p1').curse).toBe(0);
+    expect(get(state, 'p1')).toMatchObject({ curse: 0, hasKick: true });
   });
 
   it('an already cursed player walks over curse items without taking them', () => {
@@ -297,14 +303,14 @@ describe('transfer on contact', () => {
       curse: 0,
       cursedBy: null,
       cursedBySession: null,
-      curseTransfers: 1,
+      stats: expect.objectContaining({ transfers: 1, trollPoints: 1 }),
     });
     expect(get(state, 'p2')).toMatchObject({
       curse: 119, // what was left after this tick
       cursedBy: 'p1',
       cursedBySession: 1,
       curseCooldown: CFG.curseTransferCooldownTicks,
-      curseTransfers: 0,
+      stats: expect.objectContaining({ transfers: 0, trollPoints: 0 }),
     });
   });
 
@@ -340,7 +346,7 @@ describe('transfer on contact', () => {
     s = run(s, 1);
     expect(s.tick - sentAt).toBe(CFG.curseTransferCooldownTicks);
     expect(get(s, 'p1')).toMatchObject({ cursedBy: 'p2' }); // handed back
-    expect(get(s, 'p2')).toMatchObject({ curse: 0, curseTransfers: 1 });
+    expect(get(s, 'p2')).toMatchObject({ curse: 0, stats: { transfers: 1 } });
   });
 
   it('cooldown only blocks the sender: a third player can be cursed straight away', () => {
@@ -379,8 +385,8 @@ describe('transfer on contact', () => {
   it('two cursed players touching each other changes nothing', () => {
     const s = meet(curse(curse(together(), 'p1', 100, 'p3'), 'p2', 60, 'p4'));
     const { state } = tick(s);
-    expect(get(state, 'p1')).toMatchObject({ curse: 99, cursedBy: 'p3', curseTransfers: 0 });
-    expect(get(state, 'p2')).toMatchObject({ curse: 59, cursedBy: 'p4', curseTransfers: 0 });
+    expect(get(state, 'p1')).toMatchObject({ curse: 99, cursedBy: 'p3', stats: { transfers: 0 } });
+    expect(get(state, 'p2')).toMatchObject({ curse: 59, cursedBy: 'p4', stats: { transfers: 0 } });
   });
 
   it('a curse that runs out this tick is not passed on', () => {
@@ -388,7 +394,7 @@ describe('transfer on contact', () => {
     const { state } = tick(s);
     expect(get(state, 'p1').curse).toBe(0);
     expect(get(state, 'p2').curse).toBe(0);
-    expect(get(state, 'p1').curseTransfers).toBe(0);
+    expect(get(state, 'p1').stats.transfers).toBe(0);
   });
 
   it('a fresh pickup is not passed on in the same tick', () => {

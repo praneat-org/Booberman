@@ -42,7 +42,42 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # builds apps/client first (apps/worker depends on it): wrangler.jsonc serves ../client/dist
+      # BE-58 / FE-16: VITE_ASSETS_BASE_URL is baked into the client so it loads assets from the R2 bucket through
+      # manifest.json (written into dist by the sync step below). Not a secret: same GitHub Environment variable
+      # the verify step uses. Unset = the client falls back to plain names from the Worker.
       - run: pnpm build
+        env:
+          VITE_ASSETS_BASE_URL: ${{ vars.ASSETS_PUBLIC_URL }}
+
+      # BE-37 / CAR-3789: content-hashed assets -> R2 (only files the bucket does not have yet), then
+      # manifest.json into the client build that `wrangler deploy` serves. Runs BEFORE migrations / deploy:
+      # an upload only adds files nobody references yet, so a failure later leaves nothing half-switched, and a
+      # failure here (bad token, bucket missing, CORS wrong) stops the job before anything else changes.
+      - name: Sync assets to R2 (dev)
+        shell: bash
+        run: node scripts/upload-assets.ts sync --bucket "$R2_BUCKET" --out apps/client/dist/manifest.json
+        env:
+          R2_BUCKET: booberman-assets-dev
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # overwrites the bucket's CORS rules with r2-cors.dev.json each run (idempotent), so the file is the truth
+      - name: Apply R2 CORS (dev)
+        working-directory: apps/worker
+        run: pnpm exec wrangler r2 bucket cors set "$R2_BUCKET" --file ../../r2-cors.dev.json --force
+        env:
+          R2_BUCKET: booberman-assets-dev
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # what a browser sees: every file in manifest.json has the immutable Cache-Control + CORS for the game
+      # origin. GitHub Environment variable ASSETS_PUBLIC_URL = public base URL of the bucket (not a secret).
+      - name: Check public asset headers (dev)
+        shell: bash
+        run: node scripts/upload-assets.ts verify --manifest apps/client/dist/manifest.json --base-url "$ASSETS_PUBLIC_URL" --origin "$GAME_ORIGIN"
+        env:
+          ASSETS_PUBLIC_URL: ${{ vars.ASSETS_PUBLIC_URL }}
+          GAME_ORIGIN: https://booberman-dev.miryn.workers.dev
 
       - name: Apply D1 migrations (dev)
         working-directory: apps/worker

@@ -35,6 +35,14 @@ export class InputSender {
 
   constructor(private readonly send: (input: TransportInput) => void) {}
 
+  /**
+   * A new connection (reconnect, FE-22): the server starts it with no direction held, whatever we sent on
+   * the old socket, so the held direction has to go out again on the next `update`.
+   */
+  resync(): void {
+    this.lastDir = 'none';
+  }
+
   update(dir: InputDir, bomb: boolean): boolean {
     if (dir === this.lastDir && !bomb) return false;
     this.lastDir = dir;

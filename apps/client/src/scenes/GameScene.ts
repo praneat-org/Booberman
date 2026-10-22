@@ -1,24 +1,50 @@
 import type { PlayerId } from '@booberman/protocol';
 import Phaser from 'phaser';
+import { SheetFrame } from '../assets/sheetFrames';
+import { GameAudio } from '../audio/GameAudio';
+import { MuteButton } from '../audio/MuteButton';
+import { loadMuted, saveMuted } from '../audio/muteStore';
+import { toSoundPort } from '../audio/phaserSound';
 import { joinFromLocation } from '../lobby/joinTarget';
-import { createTransport } from '../net/createTransport';
+import { createTransport, transportKind } from '../net/createTransport';
+import { type JoinFailureKind, JoinWatcher } from '../net/joinWatcher';
+import { Reconnector } from '../net/reconnector';
 import type { Unsubscribe } from '../net/Transport';
 import { CurseFrames } from '../ui/CurseFrames';
 import { attachDebugOverlay } from '../ui/DebugOverlay';
+import { EndOverlay } from '../ui/EndOverlay';
+import { KillFeedOverlay } from '../ui/KillFeedOverlay';
+import { ReconnectOverlay } from '../ui/ReconnectOverlay';
+import { RoomBar } from '../ui/RoomBar';
+import { browserTouchEnv, TouchControls } from '../ui/TouchControls';
 import { applyBoardEvent, applyWelcome } from '../view/boardEvents';
 import { toCurseFrames } from '../view/curseFrames';
 import { debugEnabled } from '../view/debugStats';
 import { DirectionTracker, type HeldDir, InputSender } from '../view/directionInput';
+import { toRematchView, toWaitingRows } from '../view/endView';
+import { KICK_BADGE_SCALE, KICK_BADGE_TINT, toKickBadges } from '../view/kickBadges';
 import { BOARD_HEIGHT_PX, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, TILE_SIZE } from '../view/layout';
 import { IDLE_FRAME, walkAnimKey } from '../view/playerAnim';
 import { type Drawable, RoundView } from '../view/roundView';
+import { touchEnabled } from '../view/touchControls';
 import { AssetKey, SceneKey } from './keys';
+import type { LobbySceneData } from './LobbyScene';
 
 /** Draw order, back to front. */
 const Depth = { Box: 1, Item: 2, Bomb: 3, Flame: 4, Player: 10, Marker: 11, Curse: 12 } as const;
-const MARKER_OFFSET = { x: (TILE_SIZE - 8) / 2, y: -7 };
+const MARKER_OFFSET = { x: 0, y: -7 };
 
 type Sprite = Phaser.GameObjects.Sprite;
+
+/** Who joins which room; the lobby passes it in `scene.start(Game, ...)`. Absent with `?mock=1`. */
+export interface GameSceneData {
+  roomId?: string;
+  nickname?: string;
+}
+
+/** Ghosts are see-through and their bombs small (BE-46). */
+const GHOST_ALPHA = 0.5;
+const GHOST_BOMB_SCALE = 0.6;
 
 /**
  * Draws the arena from what the server says: walls from the tilemap, boxes from `grid` +
@@ -34,19 +60,28 @@ export class GameScene extends Phaser.Scene {
   private bombSprites = new Map<string, Sprite>();
   private flameSprites = new Map<string, Sprite>();
   private itemSprites = new Map<string, Sprite>();
+  private kickBadgeSprites = new Map<string, Sprite>();
   private marker: Phaser.GameObjects.Image | undefined;
   private curseFrames: CurseFrames | undefined;
   private tracker = new DirectionTracker();
   private sender: InputSender | undefined;
   private bombPressed = false;
+  private target: GameSceneData = {};
+  private audio: GameAudio | undefined;
+  private killFeed: KillFeedOverlay | undefined;
+  private endScreen: EndOverlay | undefined;
 
   constructor() {
     super(SceneKey.Game);
   }
 
+  init(data?: GameSceneData): void {
+    this.target = data ?? {};
+  }
+
   create(): void {
     const map = this.make.tilemap({ key: AssetKey.Arena });
-    const tiles = map.addTilesetImage('tileset', AssetKey.Tiles);
+    const tiles = map.addTilesetImage('tileset', AssetKey.Sheet);
     if (!tiles) throw new Error('tileset "tileset" missing from arena.json');
     map.createLayer('ground', tiles, 0, 0);
 
@@ -55,20 +90,28 @@ export class GameScene extends Phaser.Scene {
     this.bombSprites = new Map();
     this.flameSprites = new Map();
     this.itemSprites = new Map();
+    this.kickBadgeSprites = new Map();
     this.round = new RoundView();
     this.tracker = new DirectionTracker();
     this.selfId = undefined;
     this.bombPressed = false;
+    this.audio = undefined;
+    this.killFeed = undefined;
+    this.endScreen = undefined;
     // the HUD strip lives above the board: the game camera only covers the board
     this.cameras.main.setViewport(0, BOARD_ORIGIN_Y, BOARD_WIDTH_PX, BOARD_HEIGHT_PX);
     this.curseFrames = new CurseFrames(this, Depth.Curse, TILE_SIZE);
     this.marker = this.add
-      .image(0, 0, AssetKey.Marker)
+      .image(0, 0, AssetKey.Sheet, SheetFrame.marker)
       .setOrigin(0, 0)
       .setDepth(Depth.Marker)
       .setVisible(false);
 
-    const join = joinFromLocation(window.location);
+    const { roomId, nickname } = this.target;
+    const join =
+      roomId !== undefined && nickname !== undefined
+        ? { roomId, nickname }
+        : joinFromLocation(window.location);
     const transport = createTransport(window.location.search, join);
     if (!transport) {
       this.add
@@ -101,6 +144,8 @@ export class GameScene extends Phaser.Scene {
         // the server never announces us to ourselves: our card's name is the one we joined with
         applyWelcome(msg, this.round, join.nickname);
         this.destroyRoundSprites();
+        // also after a reconnect: the new socket starts with nothing held
+        this.sender?.resync();
       }),
       transport.onSnapshot((msg) => this.round.applySnapshot(msg, performance.now())),
       transport.onEvent((msg) => {
@@ -109,7 +154,30 @@ export class GameScene extends Phaser.Scene {
       transport.onError((code, message) => console.warn('[transport] error', code, message)),
     ];
     this.sender = new InputSender((input) => transport.send(input));
-    cleanups.push(...this.bindKeyboard());
+    // sound follows the server's snapshots / events (see SfxTracker), never our own key presses
+    const audio = new GameAudio({
+      sound: toSoundPort(this.sound),
+      cache: this.cache.audio,
+      loadMuted,
+      saveMuted,
+      onLog: debugEnabled(window.location.search)
+        ? (e) => console.info('[sfx]', e.name, e.outcome)
+        : undefined,
+    });
+    this.audio = audio;
+    cleanups.push(() => audio.dispose());
+    const muteButton = new MuteButton(audio);
+    cleanups.push(() => muteButton.destroy());
+    // kill feed + end screen (FE-21): DOM layers that only show what the server's events said
+    const killFeed = new KillFeedOverlay();
+    this.killFeed = killFeed;
+    cleanups.push(() => killFeed.destroy());
+    const endScreen = new EndOverlay({ onRematch: () => transport.rematch() });
+    this.endScreen = endScreen;
+    cleanups.push(() => endScreen.destroy());
+    cleanups.push(...this.watchJoin(transport, join));
+    cleanups.push(...this.bindKeyboard(audio));
+    cleanups.push(...this.bindTouch());
     if (debugEnabled(window.location.search)) {
       cleanups.push(
         attachDebugOverlay(transport, () => ({
@@ -127,6 +195,9 @@ export class GameScene extends Phaser.Scene {
       for (const off of cleanups) off();
       transport.disconnect();
       this.sender = undefined;
+      this.audio = undefined;
+      this.killFeed = undefined;
+      this.endScreen = undefined;
     });
     transport.connect();
 
@@ -136,6 +207,10 @@ export class GameScene extends Phaser.Scene {
         transport,
         snapshot: () => this.round.latest,
         selfId: () => this.selfId,
+        audio,
+        sound: this.sound,
+        end: () => this.round.end,
+        rematch: () => this.round.rematch,
       };
     }
   }
@@ -143,14 +218,92 @@ export class GameScene extends Phaser.Scene {
   override update(): void {
     this.sender?.update(this.tracker.current(), this.bombPressed);
     this.bombPressed = false;
-    this.round.frame(performance.now());
+    for (const name of this.round.frame(performance.now())) this.audio?.trigger(name);
     this.drawBoxes();
     const d = this.round.drawable(this.selfId);
     this.drawBombs(d.bombs);
     this.drawFlames(d.flames);
     this.drawItems(d.items);
     this.drawPlayers(d.players);
+    this.drawKickBadges(d.players);
     this.curseFrames?.sync(toCurseFrames(d.players, this.round.latest?.tick ?? 0));
+    this.drawOverlays();
+  }
+
+  /** Kill feed + end screen follow the round view every frame; both write only what changed. */
+  private drawOverlays(): void {
+    this.killFeed?.sync(this.round.killFeed.visible(performance.now()), () =>
+      this.game.canvas.getBoundingClientRect(),
+    );
+    const end = this.round.end;
+    const now = Date.now();
+    if (this.round.waiting) {
+      const { rematch, roster } = this.round;
+      this.endScreen?.syncWaiting(
+        toWaitingRows(rematch, roster, this.selfId),
+        toRematchView(rematch, roster, this.selfId, now),
+        now,
+      );
+      return;
+    }
+    this.endScreen?.sync(
+      end,
+      end && toRematchView(this.round.rematch, this.round.roster, this.selfId, now),
+      now,
+    );
+  }
+
+  /**
+   * The real server only: show the room bar (copy / share link) and turn "did the join work?" into
+   * either the bar's button or a trip back to the lobby with the reason. Once in, a dropped connection
+   * is won back with the reconnect token under a "reconnecting" overlay (FE-22), and only a hopeless one
+   * (15 s up, or the server says no) goes back to the lobby. `?mock=1` has no room.
+   */
+  private watchJoin(
+    transport: NonNullable<ReturnType<typeof createTransport>>,
+    join: { roomId: string; nickname: string },
+  ): Unsubscribe[] {
+    if (transportKind(window.location.search) !== 'ws') return [];
+    const host = document.getElementById('app');
+    const bar = host
+      ? new RoomBar({ roomId: join.roomId }, host, () => this.refitCanvas())
+      : undefined;
+    const leave = (kind: JoinFailureKind) => {
+      const failure = { kind, roomId: join.roomId, nickname: join.nickname };
+      this.scene.start(SceneKey.Lobby, { failure } satisfies LobbySceneData);
+    };
+    const overlay = new ReconnectOverlay(host ?? document.body);
+    const reconnector = new Reconnector(transport, {
+      onReconnecting: (deadline) => overlay.show(deadline),
+      onRestored: () => overlay.hide(),
+      onGaveUp: (kind) => {
+        overlay.hide();
+        leave(kind);
+      },
+    });
+    const watcher = new JoinWatcher(transport, {
+      onJoined: () => {
+        bar?.setJoined(true);
+        reconnector.arm();
+      },
+      onFailed: leave,
+      // a connection lost after joining is the Reconnector's: it retries, and leaves when that is hopeless
+      onLost: () => {},
+    });
+    return [
+      () => watcher.dispose(),
+      () => reconnector.dispose(),
+      () => overlay.destroy(),
+      () => bar?.destroy(),
+    ];
+  }
+
+  /**
+   * The room bar changes how much height `#app` has. Phaser only re-measures its parent every
+   * 500 ms, and `refresh()` alone reuses the old measurement, so measure first.
+   */
+  private refitCanvas(): void {
+    if (this.scale.getParentBounds()) this.scale.refresh();
   }
 
   /**
@@ -163,6 +316,7 @@ export class GameScene extends Phaser.Scene {
       this.bombSprites,
       this.flameSprites,
       this.itemSprites,
+      this.kickBadgeSprites,
       this.players,
     ]) {
       for (const sprite of pool.values()) sprite.destroy();
@@ -176,7 +330,7 @@ export class GameScene extends Phaser.Scene {
     const views = this.round.boxes.list().map((b) => ({ key: `${b.x},${b.y}`, ...b }));
     this.sync(this.boxSprites, views, (v) =>
       this.add
-        .sprite(v.x * TILE_SIZE, v.y * TILE_SIZE, AssetKey.Box)
+        .sprite(v.x * TILE_SIZE, v.y * TILE_SIZE, AssetKey.Sheet, SheetFrame.box)
         .setOrigin(0, 0)
         .setDepth(Depth.Box),
     );
@@ -184,29 +338,59 @@ export class GameScene extends Phaser.Scene {
 
   private drawBombs(views: Drawable['bombs']): void {
     this.sync(this.bombSprites, views, (v) =>
-      this.add.sprite(v.px, v.py, AssetKey.Bomb, 0).setOrigin(0, 0).setDepth(Depth.Bomb),
+      this.add
+        .sprite(v.px, v.py, AssetKey.Sheet, SheetFrame.bomb)
+        .setOrigin(0, 0)
+        .setDepth(Depth.Bomb),
     );
     for (const v of views) {
-      // bright frame + slight pulse; the phase comes from the server's fuse
+      // One bomb frame; tint and pulse it as the fuse runs down. Placed every frame: a kicked
+      // bomb glides between tiles (FE-23), its view position is not its tile. Scaled around the
+      // tile centre; a ghost's bomb is smaller.
       this.bombSprites
         .get(v.key)
-        ?.setFrame(v.bright ? 1 : 0)
-        .setScale(v.bright ? 1 : 0.9);
+        ?.setOrigin(0.5, 0.5)
+        .setPosition(v.px + TILE_SIZE / 2, v.py + TILE_SIZE / 2)
+        .setTint(v.bright ? 0xffffff : 0x999999)
+        .setScale(v.ghost ? GHOST_BOMB_SCALE : v.bright ? 1 : 0.9);
     }
   }
 
   private drawFlames(views: Drawable['flames']): void {
     this.sync(this.flameSprites, views, (v) =>
-      this.add.sprite(v.px, v.py, AssetKey.Flame, v.frame).setOrigin(0, 0).setDepth(Depth.Flame),
+      this.add
+        .sprite(v.px, v.py, AssetKey.Sheet, SheetFrame.flame[0])
+        .setOrigin(0, 0)
+        .setDepth(Depth.Flame),
     );
-    for (const v of views) this.flameSprites.get(v.key)?.setFrame(v.frame);
+    for (const v of views)
+      this.flameSprites
+        .get(v.key)
+        ?.setFrame(v.frame === 0 ? SheetFrame.flame[0] : SheetFrame.flame[1]);
   }
 
   private drawItems(views: Drawable['items']): void {
     this.sync(this.itemSprites, views, (v) =>
-      this.add.sprite(v.px, v.py, AssetKey.Items, v.frame).setOrigin(0, 0).setDepth(Depth.Item),
+      this.add
+        .sprite(v.px, v.py, AssetKey.Sheet, SheetFrame.curse)
+        .setOrigin(0, 0)
+        .setDepth(Depth.Item),
     );
-    for (const v of views) this.itemSprites.get(v.key)?.setFrame(v.frame);
+    for (const v of views)
+      this.itemSprites.get(v.key)?.setFrame(v.frame === 0 ? SheetFrame.curse : SheetFrame.kick);
+  }
+
+  /** FE-23: a small green skate on every player who holds the kick item. */
+  private drawKickBadges(players: Drawable['players']): void {
+    const views = toKickBadges(players);
+    this.sync(this.kickBadgeSprites, views, () =>
+      this.add
+        .sprite(0, 0, AssetKey.Sheet, SheetFrame.kick)
+        .setScale(KICK_BADGE_SCALE)
+        .setTint(KICK_BADGE_TINT)
+        .setDepth(Depth.Player + 0.5),
+    );
+    for (const v of views) this.kickBadgeSprites.get(v.key)?.setPosition(v.cx, v.cy);
   }
 
   private drawPlayers(players: Drawable['players']): void {
@@ -216,11 +400,14 @@ export class GameScene extends Phaser.Scene {
       seen.add(view.id);
       let sprite = this.players.get(view.id);
       if (!sprite) {
-        sprite = this.add.sprite(0, 0, AssetKey.Player, 0).setDepth(Depth.Player);
+        sprite = this.add.sprite(0, 0, AssetKey.Sheet, SheetFrame.idle.down).setDepth(Depth.Player);
         this.players.set(view.id, sprite);
       }
       // origin at the sprite centre so the death spin / shrink stays on the tile
-      sprite.setOrigin(0.5, 0.5).setPosition(view.px + TILE_SIZE / 2, view.py + TILE_SIZE / 2);
+      const bob = anim.moving ? Math.round(Math.sin(this.time.now / 80)) : 0;
+      sprite
+        .setOrigin(0.5, 0.5)
+        .setPosition(view.px + TILE_SIZE / 2, view.py + TILE_SIZE / 2 - bob);
       sprite.setTint(view.tint);
       if (anim.phase === 'dying') {
         sprite.anims.stop();
@@ -230,7 +417,10 @@ export class GameScene extends Phaser.Scene {
           .setAngle(anim.progress * 360)
           .setAlpha(1 - anim.progress);
       } else {
-        sprite.setScale(1).setAngle(0).setAlpha(1);
+        sprite
+          .setScale(1)
+          .setAngle(0)
+          .setAlpha(view.ghost ? GHOST_ALPHA : 1);
         if (anim.moving) sprite.anims.play(walkAnimKey(anim.facing), true);
         else {
           sprite.anims.stop();
@@ -247,7 +437,7 @@ export class GameScene extends Phaser.Scene {
     this.placeMarker(selfSprite);
   }
 
-  /** Arrow above our own head, bobbing; hidden while we are dead / not yet in the snapshot. */
+  /** Arrow marker above our player; hidden while we are dead / not yet in the snapshot. */
   private placeMarker(self: Sprite | undefined): void {
     if (!this.marker) return;
     if (!self) {
@@ -281,12 +471,38 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Arrow keys + Space; blur / hidden tab → release everything so we send `none` (D27). */
-  private bindKeyboard(): Unsubscribe[] {
+  /**
+   * FE-28: on-screen D-pad + bomb button, only where the primary pointer is a finger (or `?touch=1`).
+   * They feed the same `DirectionTracker` and `bombPressed` as the keyboard, so `InputSender` (D27)
+   * is the only thing that turns either into messages. The blur / hidden handling that releases the
+   * keys also releases the touch buttons (see `TouchControls`).
+   */
+  private bindTouch(): Unsubscribe[] {
+    const host = document.getElementById('app');
+    if (!host || !touchEnabled(window.location.search, browserTouchEnv())) return [];
+    const controls = new TouchControls(
+      {
+        press: (button) => {
+          if (button === 'bomb') this.bombPressed = true;
+          else this.tracker.press(button);
+        },
+        release: (button) => {
+          if (button !== 'bomb') this.tracker.release(button);
+        },
+      },
+      host,
+      () => this.refitCanvas(),
+    );
+    return [() => controls.destroy()];
+  }
+
+  /** Arrow keys + Space, `M` mutes; blur / hidden tab → release everything so we send `none` (D27). */
+  private bindKeyboard(audio: GameAudio): Unsubscribe[] {
     const keyboard = this.input.keyboard;
     if (!keyboard) return [];
     const cursors = keyboard.createCursorKeys();
     const space = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    const mute = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.M);
     const offs: Unsubscribe[] = [];
     const dirKeys: [Phaser.Input.Keyboard.Key, HeldDir][] = [
       [cursors.up, 'up'],
@@ -309,6 +525,9 @@ export class GameScene extends Phaser.Scene {
     };
     space.on('down', bomb);
     offs.push(() => space.off('down', bomb));
+    const toggleMute = () => audio.toggleMuted();
+    mute.on('down', toggleMute);
+    offs.push(() => mute.off('down', toggleMute));
 
     const release = () => this.tracker.clear();
     this.game.events.on(Phaser.Core.Events.BLUR, release);
@@ -317,6 +536,7 @@ export class GameScene extends Phaser.Scene {
       this.game.events.off(Phaser.Core.Events.BLUR, release);
       this.game.events.off(Phaser.Core.Events.HIDDEN, release);
       keyboard.removeKey(space);
+      keyboard.removeKey(mute);
       for (const [key] of dirKeys) keyboard.removeKey(key);
     });
     return offs;
